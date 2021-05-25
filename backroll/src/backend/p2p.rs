@@ -1,16 +1,16 @@
-use super::{
-    super::{
-        input::{FrameInput, GameInput},
-        is_null,
-        protocol::ConnectionStatus,
-        sync::{self, BackrollSync},
-        BackrollConfig, Frame, NetworkStats, SessionCallbacks,
-    },
-    BackrollError, BackrollPlayer, BackrollPlayerHandle, BackrollResult,
+use super::{BackrollError, BackrollPlayer, BackrollPlayerHandle, BackrollResult};
+use crate::{
+    input::{FrameInput, GameInput},
+    is_null,
+    protocol::{BackrollPeer, ConnectionStatus},
+    sync::{self, BackrollSync},
+    BackrollConfig, Frame, NetworkStats, SessionCallbacks,
 };
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tracing::info;
+
+const RECOMMENDATION_INTERVAL: Frame = 240;
 
 pub struct P2PBackend<T>
 where
@@ -20,8 +20,8 @@ where
     players: Vec<BackrollPlayer<T>>,
 
     synchronizing: bool,
-    next_recommended_sleep: u32,
-    next_spectator_frame: u32,
+    next_recommended_sleep: Frame,
+    next_spectator_frame: Frame,
 
     disconnect_timeout: Option<Duration>,
     disconnect_notify_start: Option<Duration>,
@@ -52,12 +52,173 @@ impl<T: BackrollConfig> P2PBackend<T> {
         }
     }
 
+    fn players(&self) -> impl Iterator<Item = &BackrollPeer<T>> {
+        self.players
+            .iter()
+            .filter(|player| player.is_remote_player())
+            .map(|player| player.peer())
+            .flatten()
+    }
+
+    fn players_mut(&mut self) -> impl Iterator<Item = &mut BackrollPeer<T>> {
+        self.players
+            .iter_mut()
+            .filter(|player| player.is_remote_player())
+            .map(|player| player.peer_mut())
+            .flatten()
+    }
+
+    fn spectators(&self) -> impl Iterator<Item = &BackrollPeer<T>> {
+        self.players
+            .iter()
+            .filter(|player| player.is_spectator())
+            .map(|player| player.peer())
+            .flatten()
+    }
+
     pub fn player_count(&self) -> usize {
         self.sync.player_count()
     }
 
-    pub fn do_poll(&mut self, timeout: u32) -> BackrollResult<()> {
-        Err(BackrollError::UnsupportedOperation)
+    pub fn do_poll(&mut self, timeout: i32) {
+        if self.sync.in_rollback() || self.synchronizing {
+            return;
+        }
+
+        self.sync.check_simulation(timeout);
+
+        // notify all of our endpoints of their local frame number for their
+        // next connection quality report
+        let current_frame = self.sync.frame_count();
+        for player in self.players_mut() {
+            player.set_local_frame_number(current_frame);
+        }
+
+        let min_frame = if self.players().count() <= 2 {
+            self.poll_2_players()
+        } else {
+            self.poll_n_players()
+        };
+
+        info!("last confirmed frame in p2p backend is {}.", min_frame);
+        if min_frame >= 0 {
+            debug_assert!(min_frame != Frame::MAX);
+            if self.spectators().next().is_some() {
+                while self.next_spectator_frame <= min_frame {
+                    info!("pushing frame {} to spectators.", self.next_spectator_frame);
+
+                    // FIXME(james7132): Spectator input sending.
+                    // let (input, _)= self.sync.get_confirmed_inputs(self.next_spectator_frame);
+                    // for spectator in self.spectators() {
+                    //     spectator.send_input(input);
+                    // }
+                    self.next_spectator_frame += 1;
+                }
+            }
+            info!("setting confirmed frame in sync to {}.", min_frame);
+            self.sync.set_last_confirmed_frame(min_frame);
+        }
+
+        // send timesync notifications if now is the proper time
+        if current_frame > self.next_recommended_sleep {
+            let interval = self
+                .players_mut()
+                .map(|player| player.recommend_frame_delay())
+                .max();
+            if let Some(interval) = interval {
+                // GGPOEvent info;
+                // info.code = GGPO_EVENTCODE_TIMESYNC;
+                // info.u.timesync.frames_ahead = interval;
+                // _callbacks.on_event(&info);
+                self.next_recommended_sleep = current_frame + RECOMMENDATION_INTERVAL;
+            }
+        }
+        // XXX: this is obviously a farce...
+        // if timeout != 0 {
+        //     Sleep(1);
+        // }
+    }
+
+    fn poll_2_players(&mut self) -> Frame {
+        // discard confirmed frames as appropriate
+        let mut min_frame = Frame::MAX;
+        for i in 0..self.players.len() {
+            let player = &self.players[i];
+            let mut queue_connected = true;
+            if let Some(peer) = player.peer() {
+                if peer.state().is_running() {
+                    queue_connected = !peer.get_peer_connect_status(i).disconnected;
+                }
+            }
+            let local_status = self.local_connect_status[i].read().unwrap().clone();
+            if !local_status.disconnected {
+                min_frame = std::cmp::min(local_status.last_frame, min_frame);
+            }
+            info!(
+                "local endp: connected = {}, last_received = {}, total_min_confirmed = {}.",
+                !local_status.disconnected, local_status.last_frame, min_frame
+            );
+            if !queue_connected && !local_status.disconnected {
+                info!("disconnecting player {} by remote request.", i);
+                self.disconnect_player_queue(i, min_frame);
+            }
+            info!("min_frame = {}.", min_frame);
+        }
+        return min_frame;
+    }
+
+    fn poll_n_players(&mut self) -> Frame {
+        // discard confirmed frames as appropriate
+        let mut min_frame = Frame::MAX;
+        for queue in 0..self.players.len() {
+            let player = &self.players[queue];
+            let mut queue_connected = true;
+            let mut queue_min_confirmed = Frame::MAX;
+            info!("considering queue {}.", queue);
+            for (i, player) in self.players.iter().enumerate() {
+                // we're going to do a lot of logic here in consideration of endpoint i.
+                // keep accumulating the minimum confirmed point for all n*n packets and
+                // throw away the rest.
+                if player
+                    .peer()
+                    .map(|peer| peer.state().is_running())
+                    .unwrap_or(false)
+                {
+                    let peer = player.peer().unwrap();
+                    let status = peer.get_peer_connect_status(queue);
+                    queue_connected = queue_connected && !status.disconnected;
+                    queue_min_confirmed = std::cmp::min(status.last_frame, queue_min_confirmed);
+                    info!("endpoint {}: connected = {}, last_received = {}, queue_min_confirmed = {}.", 
+                          i, queue_connected, status.last_frame, queue_min_confirmed);
+                } else {
+                    info!("endpoint {}: ignoring... not running.", i);
+                }
+            }
+
+            let local_status = self.local_connect_status[queue].read().unwrap().clone();
+            // merge in our local status only if we're still connected!
+            if !local_status.disconnected {
+                queue_min_confirmed = std::cmp::min(local_status.last_frame, queue_min_confirmed);
+            }
+            info!(
+                "local endp: connected = {}, last_received = {}, queue_min_confirmed = {}.",
+                !local_status.disconnected, local_status.last_frame, queue_min_confirmed
+            );
+
+            if queue_connected {
+                min_frame = std::cmp::min(queue_min_confirmed, min_frame);
+            } else {
+                // check to see if this disconnect notification is further back than we've been before.  If
+                // so, we need to re-adjust.  This can happen when we detect our own disconnect at frame n
+                // and later receive a disconnect notification for frame n-1.
+                if !local_status.disconnected || local_status.last_frame > queue_min_confirmed {
+                    info!("disconnecting queue {} by remote request.", queue);
+                    self.disconnect_player_queue(queue, queue_min_confirmed);
+                }
+            }
+            info!("min_frame = {}.", min_frame);
+        }
+        return min_frame;
     }
 
     pub fn add_player(

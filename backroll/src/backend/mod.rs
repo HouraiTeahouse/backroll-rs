@@ -24,8 +24,14 @@ where
 }
 
 impl<T: BackrollConfig> Session<T> {
-    pub fn do_poll(&mut self, timeout: u32) -> BackrollResult<()> {
-        Ok(())
+    /// A periodic poll for network events. This should be called periodically
+    /// (i.e. once a frame during Vsync) to ensure that events are being
+    /// handled.
+    pub fn do_poll(&mut self) {
+        match &mut self.0 {
+            Backend::P2P(p2p) => p2p.do_poll(),
+            _ => {}
+        }
     }
 
     pub fn add_player(

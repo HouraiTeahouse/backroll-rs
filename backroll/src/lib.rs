@@ -58,6 +58,22 @@ impl<T: BackrollConfig> BackrollPlayer<T> {
         self.peer().is_none()
     }
 
+    pub fn is_remote_player(&self) -> bool {
+        if let Self::Remote(peer) = self {
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn is_spectator(&self) -> bool {
+        if let Self::Spectator(peer) = self {
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn is_synchronized(&self) -> bool {
         if let Some(peer) = self.peer() {
             peer.state().is_running()

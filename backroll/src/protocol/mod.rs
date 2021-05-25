@@ -711,7 +711,7 @@ impl<T: BackrollConfig> BackrollPeer<T> {
         true
     }
 
-    fn set_local_frame_number(&mut self, local_frame: Frame) {
+    pub fn set_local_frame_number(&mut self, local_frame: Frame) {
         // Estimate which frame the other guy is one by looking at the
         // last frame they gave us plus some delta for the one-way packet
         // trip time.
@@ -725,7 +725,7 @@ impl<T: BackrollConfig> BackrollPeer<T> {
         self.local_frame_advantage = remote_frame - local_frame;
     }
 
-    fn recommend_frame_delay(&mut self) -> Frame {
+    pub fn recommend_frame_delay(&mut self) -> Frame {
         // XXX: require idle input should be a configuration parameter
         self.timesync.recommend_frame_wait_duration(false)
     }

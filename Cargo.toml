@@ -1,0 +1,7 @@
+[workspace]
+members = [
+  "backroll",
+  "bevy_backroll",
+  "backroll_transport",
+  "backroll_transport_udp",
+]

@@ -74,7 +74,6 @@ pub(super) struct InputAck {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(super) struct SyncRequest {
     pub random: u32,
-    pub remote_magic: u16,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

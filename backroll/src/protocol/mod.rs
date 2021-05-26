@@ -81,7 +81,7 @@ where
     queue: usize,
 
     magic_number: u16,
-    remote_magic_number: u16,
+    remote_magic_number: Option<u16>,
 
     peer: Peer,
     timesync: TimeSync<T::Input>,
@@ -131,7 +131,7 @@ impl<T: BackrollConfig> BackrollPeer<T> {
             timesync: TimeSync::default(),
 
             magic_number: magic,
-            remote_magic_number: 0,
+            remote_magic_number: None,
 
             peer,
             state: PeerState::default(),
@@ -413,7 +413,7 @@ impl<T: BackrollConfig> BackrollPeer<T> {
             MessageData::SyncRequest { .. } => {}
             MessageData::SyncReply { .. } => {}
             _ => {
-                if message.magic != self.remote_magic_number {
+                if Some(message.magic) != self.remote_magic_number {
                     info!("recv rejecting invalid magic number");
                     return;
                 }
@@ -456,16 +456,15 @@ impl<T: BackrollConfig> BackrollPeer<T> {
     }
 
     fn on_sync_request(&mut self, magic: u16, data: SyncRequest) -> bool {
-        let SyncRequest {
-            random,
-            remote_magic,
-        } = data;
-        if self.remote_magic_number != 0 && remote_magic != self.remote_magic_number {
-            info!(
-                "Ignoring sync request from unknown endpoint ({} != {}).",
-                remote_magic, self.remote_magic_number
-            );
-            return false;
+        let SyncRequest { random } = data;
+        if let Some(remote_magic) = self.remote_magic_number {
+            if magic != remote_magic {
+                info!(
+                    "Ignoring sync request from unknown endpoint ({} != {:?}).",
+                    magic, remote_magic
+                );
+                return false;
+            }
         }
         self.send(SyncReply { random });
         true
@@ -482,10 +481,7 @@ impl<T: BackrollConfig> BackrollPeer<T> {
 
     pub fn send_sync_request(&mut self) {
         if let PeerState::Syncing { random, .. } = self.state {
-            self.send(SyncRequest {
-                random,
-                remote_magic: self.magic_number,
-            });
+            self.send(SyncRequest { random });
         } else {
             panic!("Sending sync request while not syncing.")
         }
@@ -561,7 +557,7 @@ impl<T: BackrollConfig> BackrollPeer<T> {
                     last_input_packet_recv_time: now,
                 };
                 self.input_decoder.reset();
-                self.remote_magic_number = magic;
+                self.remote_magic_number = Some(magic);
             } else {
                 // UdpProtocol::Event evt(UdpProtocol::Event::Synchronizing);
                 // evt.u.synchronizing.total = NUM_SYNC_PACKETS;
@@ -571,8 +567,8 @@ impl<T: BackrollConfig> BackrollPeer<T> {
             }
             true
         } else {
-            info!("Ignoring SyncReply while not synching.");
-            magic == self.remote_magic_number
+            info!("Ignoring SyncReply while not syncing.");
+            Some(magic) == self.remote_magic_number
         }
     }
 

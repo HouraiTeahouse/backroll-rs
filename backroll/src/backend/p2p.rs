@@ -167,7 +167,6 @@ impl<T: BackrollConfig> P2PBackend<T> {
         // discard confirmed frames as appropriate
         let mut min_frame = Frame::MAX;
         for queue in 0..self.players.len() {
-            let player = &self.players[queue];
             let mut queue_connected = true;
             let mut queue_min_confirmed = Frame::MAX;
             info!("considering queue {}.", queue);

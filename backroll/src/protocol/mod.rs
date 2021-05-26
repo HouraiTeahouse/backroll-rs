@@ -1,3 +1,5 @@
+use self::input_buffer::*;
+use self::message::*;
 use super::{
     input::FrameInput,
     time_sync::{TimeSync, UnixMillis},
@@ -5,15 +7,18 @@ use super::{
 };
 use async_channel::TrySendError;
 use backroll_transport::connection::Peer;
+use parking_lot::RwLock;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::num::Wrapping;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::time::Duration;
 use tracing::{error, info};
 
 mod compression;
+mod input_buffer;
+mod message;
 
 const MSG_MAX_PLAYERS: usize = 8;
 const UDP_HEADER_SIZE: usize = 28; /* Size of IP + UDP headers */
@@ -106,11 +111,8 @@ where
     next_send_seq: Wrapping<u16>,
     next_recv_seq: Wrapping<u16>,
 
-    last_sent_input: FrameInput<T::Input>,
-    last_received_input: FrameInput<T::Input>,
-    last_acked_input: FrameInput<T::Input>,
-
-    pending_output: VecDeque<FrameInput<T::Input>>,
+    input_encoder: InputEncoder<T::Input>,
+    input_decoder: InputDecoder<T::Input>,
 }
 
 impl<T: BackrollConfig> BackrollPeer<T> {
@@ -156,14 +158,10 @@ impl<T: BackrollConfig> BackrollPeer<T> {
             local_frame_advantage: 0,
             remote_frame_advantage: 0,
 
-            last_sent_input: FrameInput::<T::Input>::default(),
-            last_received_input: FrameInput::<T::Input>::default(),
-            last_acked_input: FrameInput::<T::Input>::default(),
-
+            input_encoder: Default::default(),
+            input_decoder: Default::default(),
             next_send_seq: Wrapping(0),
             next_recv_seq: Wrapping(0),
-
-            pending_output: VecDeque::new(),
         }
     }
 
@@ -229,40 +227,29 @@ impl<T: BackrollConfig> BackrollPeer<T> {
             // manner.  When this happens, we can either resize the queue (ug) or disconnect them
             // (better, but still ug).  For the meantime, make this queue really big to decrease
             // the odds of this happening...
-            self.pending_output.push_front(input);
+            self.input_encoder.push(input);
         }
         self.send_pending_output();
     }
 
     fn send_pending_output(&mut self) {
-        let (start_frame, bits) = if !self.pending_output.is_empty() {
-            let start_frame = self.pending_output.back().unwrap().frame;
-            let bits = compression::encode(
-                &self.last_acked_input.input,
-                self.pending_output.iter().map(|f| &f.input),
-            );
-            self.last_sent_input = self.pending_output.front().unwrap().clone();
-            (start_frame, bits)
-        } else {
-            (0, Vec::new())
-        };
-
-        self.send(MessageData::Input(InputMessage {
+        let (start_frame, bits) = self.input_encoder.encode();
+        self.send(Input {
             peer_connect_status: self
                 .local_connect_status
                 .iter()
-                .map(|status| status.read().unwrap().clone())
+                .map(|status| status.read().clone())
                 .collect(),
             start_frame,
-            ack_frame: self.last_received_input.frame,
+            ack_frame: self.input_decoder.last_decoded_frame(),
             disconnect_requested: self.state.is_disconnected(),
             bits,
-        }));
+        });
     }
 
     pub fn send_input_ack(&mut self) {
-        self.send(MessageData::InputAck {
-            ack_frame: self.last_received_input.frame,
+        self.send(InputAck {
+            ack_frame: self.input_decoder.last_decoded_frame(),
         });
     }
 
@@ -283,7 +270,7 @@ impl<T: BackrollConfig> BackrollPeer<T> {
 
         match self.state {
             PeerState::Syncing {
-                mut roundtrips_remaining,
+                roundtrips_remaining,
                 random,
             } => {
                 next_interval = if roundtrips_remaining == NUM_SYNC_PACKETS {
@@ -313,14 +300,15 @@ impl<T: BackrollConfig> BackrollPeer<T> {
                 // xxx: rig all this up with a timer wrapper
                 if last_input_packet_recv_time + RUNNING_RETRY_INTERVAL < now {
                     info!("Haven't exchanged packets in a while (last received: {}  last sent: {}).  Resending.", 
-                            self.last_received_input.frame, self.last_sent_input.frame);
+                          self.input_decoder.last_decoded_frame(),
+                          self.input_encoder.last_encoded_frame());
                     last_input_packet_recv_time = now;
                     self.send_pending_output();
                 }
 
                 if last_quality_report_time + QUALITY_REPORT_INTERVAL < now {
                     last_quality_report_time = now;
-                    self.send(MessageData::QualityReport {
+                    self.send(QualityReport {
                         ping: now,
                         frame_advantage: self.local_frame_advantage,
                     });
@@ -379,11 +367,11 @@ impl<T: BackrollConfig> BackrollPeer<T> {
         }
     }
 
-    fn send(&mut self, message: MessageData) {
+    fn send(&mut self, message: impl Into<MessageData>) {
         let message = Message {
             magic: self.magic_number,
             sequence_number: self.next_send_seq,
-            data: message,
+            data: message.into(),
         };
         self.next_send_seq += Wrapping(1);
         let mut bytes = Vec::new();
@@ -419,7 +407,7 @@ impl<T: BackrollConfig> BackrollPeer<T> {
         }
     }
 
-    pub fn handle_message(&mut self, message: Message) {
+    fn handle_message(&mut self, message: Message) {
         let seq = message.sequence_number;
         match &message.data {
             MessageData::SyncRequest { .. } => {}
@@ -446,19 +434,16 @@ impl<T: BackrollConfig> BackrollPeer<T> {
         let mut handled = true;
         match message.data {
             MessageData::KeepAlive => {}
-            MessageData::SyncRequest { random_request, .. } => {
-                handled = self.on_sync_request(message.magic, random_request);
+            MessageData::SyncRequest(data) => {
+                handled = self.on_sync_request(message.magic, data);
             }
-            MessageData::SyncReply { random_reply } => {
-                handled = self.on_sync_reply(message.magic, random_reply);
+            MessageData::SyncReply(data) => {
+                handled = self.on_sync_reply(message.magic, data);
             }
             MessageData::Input(input) => self.on_input(input),
-            MessageData::InputAck { ack_frame } => self.on_input_ack(ack_frame),
-            MessageData::QualityReport {
-                frame_advantage,
-                ping,
-            } => self.on_quality_report(frame_advantage, ping),
-            MessageData::QualityReply { pong } => self.on_quality_reply(pong),
+            MessageData::InputAck(data) => self.input_encoder.acknowledge_frame(data.ack_frame),
+            MessageData::QualityReport(data) => self.on_quality_report(data),
+            MessageData::QualityReply(data) => self.on_quality_reply(data),
         };
 
         if handled {
@@ -470,17 +455,19 @@ impl<T: BackrollConfig> BackrollPeer<T> {
         }
     }
 
-    fn on_sync_request(&mut self, magic: u16, random_request: u32) -> bool {
-        if self.remote_magic_number != 0 && magic != self.remote_magic_number {
+    fn on_sync_request(&mut self, magic: u16, data: SyncRequest) -> bool {
+        let SyncRequest {
+            random,
+            remote_magic,
+        } = data;
+        if self.remote_magic_number != 0 && remote_magic != self.remote_magic_number {
             info!(
                 "Ignoring sync request from unknown endpoint ({} != {}).",
-                magic, self.remote_magic_number
+                remote_magic, self.remote_magic_number
             );
             return false;
         }
-        self.send(MessageData::SyncReply {
-            random_reply: random_request,
-        });
+        self.send(SyncReply { random });
         true
     }
 
@@ -495,8 +482,8 @@ impl<T: BackrollConfig> BackrollPeer<T> {
 
     pub fn send_sync_request(&mut self) {
         if let PeerState::Syncing { random, .. } = self.state {
-            self.send(MessageData::SyncRequest {
-                random_request: random,
+            self.send(SyncRequest {
+                random,
                 remote_magic: self.magic_number,
             });
         } else {
@@ -541,18 +528,15 @@ impl<T: BackrollConfig> BackrollPeer<T> {
     //    _event_queue.push(evt);
     // }
 
-    fn on_sync_reply(&mut self, magic: u16, random_reply: u32) -> bool {
+    fn on_sync_reply(&mut self, magic: u16, data: SyncReply) -> bool {
         if let PeerState::Syncing {
             random,
             ref mut roundtrips_remaining,
             ..
         } = self.state
         {
-            if random_reply != random {
-                info!(
-                    "sync reply {} != {}.  Keep looking...",
-                    random_reply, random
-                );
+            if data.random != random {
+                info!("sync reply {} != {}.  Keep looking...", data.random, random);
                 return false;
             }
 
@@ -576,7 +560,7 @@ impl<T: BackrollConfig> BackrollPeer<T> {
                     last_network_stats_interval: now,
                     last_input_packet_recv_time: now,
                 };
-                self.last_received_input.frame = -1;
+                self.input_decoder.reset();
                 self.remote_magic_number = magic;
             } else {
                 // UdpProtocol::Event evt(UdpProtocol::Event::Synchronizing);
@@ -592,8 +576,8 @@ impl<T: BackrollConfig> BackrollPeer<T> {
         }
     }
 
-    fn on_input(&mut self, msg: InputMessage) {
-        let InputMessage {
+    fn on_input(&mut self, msg: Input) {
+        let Input {
             peer_connect_status,
             start_frame,
             ack_frame,
@@ -628,65 +612,45 @@ impl<T: BackrollConfig> BackrollPeer<T> {
         }
 
         // Decompress the input.
-        let last_received_frame_number = self.last_received_input.frame;
-        if crate::is_null(self.last_received_input.frame) {
-            self.last_received_input.frame = start_frame - 1;
-        }
-        match compression::decode(&self.last_received_input.input, bits) {
+        match self.input_decoder.decode(start_frame, bits) {
             Ok(inputs) => {
-                let current_frame = self.last_received_input.frame;
-                let frame_inputs = inputs
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, input)| FrameInput::<T::Input> {
-                        frame: start_frame + i as i32,
-                        input,
-                    })
-                    .filter(|input| input.frame > current_frame);
-                for input in frame_inputs {
-                    // TODO(james7132): Push event upwards
-                    self.last_received_input = input.clone();
+                // TODO(james7132): Push event upwards
+                if let PeerState::Running {
+                    mut last_input_packet_recv_time,
+                    ..
+                } = &mut self.state
+                {
+                    last_input_packet_recv_time = UnixMillis::now();
                 }
             }
             Err(err) => {
-                error!("Error while decoding inputs, discarding: {:?}", err);
+                error!(
+                    "Error while decoding recieved inputs. discarding: {:?}",
+                    err
+                );
                 return;
             }
-        };
-        debug_assert!(self.last_received_input.frame >= last_received_frame_number);
-
-        // Get rid of our buffered input
-        self.on_input_ack(ack_frame);
-    }
-
-    fn on_input_ack(&mut self, ack_frame: Frame) {
-        // Get rid of our buffered input
-        while !self.pending_output.is_empty()
-            && self.pending_output.back().unwrap().frame < ack_frame
-        {
-            self.last_acked_input = self.pending_output.pop_back().unwrap();
-            info!(
-                "Throwing away pending output frame {}",
-                self.last_acked_input.frame
-            );
         }
+
+        // Get rid of our buffered input
+        self.input_encoder.acknowledge_frame(ack_frame);
     }
 
-    fn on_quality_report(&mut self, frame_advantage: Frame, ping: UnixMillis) {
-        self.remote_frame_advantage = frame_advantage;
-        self.send(MessageData::QualityReply { pong: ping });
+    fn on_quality_report(&mut self, data: QualityReport) {
+        self.remote_frame_advantage = data.frame_advantage;
+        self.send(QualityReply { pong: data.ping });
     }
 
-    fn on_quality_reply(&mut self, pong: UnixMillis) {
-        self.round_trip_time = UnixMillis::now() - pong;
+    fn on_quality_reply(&mut self, data: QualityReply) {
+        self.round_trip_time = UnixMillis::now() - data.pong;
     }
 
     pub fn set_local_frame_number(&mut self, local_frame: Frame) {
         // Estimate which frame the other guy is one by looking at the
         // last frame they gave us plus some delta for the one-way packet
         // trip time.
-        let remote_frame =
-            self.last_received_input.frame + (self.round_trip_time.as_secs() * TARGET_TPS) as i32;
+        let remote_frame = self.input_decoder.last_decoded_frame()
+            + (self.round_trip_time.as_secs() * TARGET_TPS) as i32;
 
         // Our frame advantage is how many frames *behind* the other guy
         // we are.  Counter-intuative, I know.  It's an advantage because
@@ -714,45 +678,6 @@ impl Default for ConnectionStatus {
             last_frame: super::NULL_FRAME,
         }
     }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Message {
-    magic: u16,
-    sequence_number: Wrapping<u16>,
-    data: MessageData,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-enum MessageData {
-    KeepAlive,
-    SyncRequest {
-        random_request: u32,
-        remote_magic: u16,
-    },
-    SyncReply {
-        random_reply: u32,
-    },
-    Input(InputMessage),
-    QualityReport {
-        frame_advantage: i32,
-        ping: UnixMillis,
-    },
-    QualityReply {
-        pong: UnixMillis,
-    },
-    InputAck {
-        ack_frame: Frame,
-    },
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct InputMessage {
-    peer_connect_status: Vec<ConnectionStatus>,
-    start_frame: Frame,
-    ack_frame: Frame,
-    disconnect_requested: bool,
-    bits: Vec<u8>,
 }
 
 struct Stats {

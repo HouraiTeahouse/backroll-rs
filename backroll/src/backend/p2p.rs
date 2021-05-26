@@ -80,12 +80,12 @@ impl<T: BackrollConfig> P2PBackend<T> {
         self.sync.player_count()
     }
 
-    pub fn do_poll(&mut self, timeout: i32) {
+    pub fn do_poll(&mut self) {
         if self.sync.in_rollback() || self.synchronizing {
             return;
         }
 
-        self.sync.check_simulation(timeout);
+        self.sync.check_simulation();
 
         // notify all of our endpoints of their local frame number for their
         // next connection quality report
@@ -133,10 +133,6 @@ impl<T: BackrollConfig> P2PBackend<T> {
                 self.next_recommended_sleep = current_frame + RECOMMENDATION_INTERVAL;
             }
         }
-        // XXX: this is obviously a farce...
-        // if timeout != 0 {
-        //     Sleep(1);
-        // }
     }
 
     fn poll_2_players(&mut self) -> Frame {
@@ -268,7 +264,7 @@ impl<T: BackrollConfig> P2PBackend<T> {
     pub fn increment_frame(&mut self) -> BackrollResult<()> {
         info!("End of frame ({})...", self.sync.frame_count());
         self.sync.increment_frame();
-        self.do_poll(0);
+        self.do_poll();
         Ok(())
     }
 

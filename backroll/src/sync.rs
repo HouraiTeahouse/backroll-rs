@@ -194,7 +194,7 @@ impl<T: BackrollConfig> BackrollSync<T> {
         (output, disconnect_flags)
     }
 
-    pub fn check_simulation(&mut self, timeout: i32) {
+    pub fn check_simulation(&mut self) {
         if let Some(seek_to) = self.check_simulation_consistency() {
             self.adjust_simulation(seek_to);
         }

@@ -247,7 +247,7 @@ impl<T: BackrollConfig> BackrollPeer<T> {
             (0, Vec::new())
         };
 
-        self.send(MessageData::Input {
+        self.send(MessageData::Input(InputMessage {
             peer_connect_status: self
                 .local_connect_status
                 .iter()
@@ -257,7 +257,7 @@ impl<T: BackrollConfig> BackrollPeer<T> {
             ack_frame: self.last_received_input.frame,
             disconnect_requested: self.state.is_disconnected(),
             bits,
-        });
+        }));
     }
 
     pub fn send_input_ack(&mut self) {
@@ -443,16 +443,22 @@ impl<T: BackrollConfig> BackrollPeer<T> {
 
         self.next_recv_seq = seq;
 
-        let handled = match &message.data {
-            MessageData::KeepAlive => true,
+        let mut handled = true;
+        match message.data {
+            MessageData::KeepAlive => {}
             MessageData::SyncRequest { random_request, .. } => {
-                self.on_sync_request(&message, *random_request)
+                handled = self.on_sync_request(message.magic, random_request);
             }
-            MessageData::SyncReply { .. } => true,
-            MessageData::Input { .. } => true,
-            MessageData::InputAck { .. } => true,
-            MessageData::QualityReport { .. } => true,
-            MessageData::QualityReply { .. } => true,
+            MessageData::SyncReply { random_reply } => {
+                handled = self.on_sync_reply(message.magic, random_reply);
+            }
+            MessageData::Input(input) => self.on_input(input),
+            MessageData::InputAck { ack_frame } => self.on_input_ack(ack_frame),
+            MessageData::QualityReport {
+                frame_advantage,
+                ping,
+            } => self.on_quality_report(frame_advantage, ping),
+            MessageData::QualityReply { pong } => self.on_quality_reply(pong),
         };
 
         if handled {
@@ -464,11 +470,11 @@ impl<T: BackrollConfig> BackrollPeer<T> {
         }
     }
 
-    fn on_sync_request(&mut self, msg: &Message, random_request: u32) -> bool {
-        if self.remote_magic_number != 0 && msg.magic != self.remote_magic_number {
+    fn on_sync_request(&mut self, magic: u16, random_request: u32) -> bool {
+        if self.remote_magic_number != 0 && magic != self.remote_magic_number {
             info!(
                 "Ignoring sync request from unknown endpoint ({} != {}).",
-                msg.magic, self.remote_magic_number
+                magic, self.remote_magic_number
             );
             return false;
         }
@@ -586,107 +592,74 @@ impl<T: BackrollConfig> BackrollPeer<T> {
         }
     }
 
-    // bool
-    // UdpProtocol::OnInput(UdpMsg *msg, int len) {
-    //    // If a disconnect is requested, go ahead and disconnect now.
-    //    bool disconnect_requested = msg->u.input.disconnect_requested;
-    //    if (disconnect_requested) {
-    //       if (_current_state != Disconnected && !_disconnect_event_sent) {
-    //          Log("Disconnecting endpoint on remote request.\n");
-    //          QueueEvent(Event(Event::Disconnected));
-    //          _disconnect_event_sent = true;
-    //       }
-    //    } else {
-    //       //  Update the peer connection status if this peer is still considered to be part
-    //       // of the network.
-    //       UdpMsg::connect_status* remote_status = msg->u.input.peer_connect_status;
-    //       for (int i = 0; i < ARRAY_SIZE(_peer_connect_status); i++) {
-    //          ASSERT(remote_status[i].last_frame >= _peer_connect_status[i].last_frame);
-    //          _peer_connect_status[i].disconnected = _peer_connect_status[i].disconnected || remote_status[i].disconnected;
-    //          _peer_connect_status[i].last_frame = MAX(_peer_connect_status[i].last_frame, remote_status[i].last_frame);
-    //       }
-    //    }
+    fn on_input(&mut self, msg: InputMessage) {
+        let InputMessage {
+            peer_connect_status,
+            start_frame,
+            ack_frame,
+            disconnect_requested,
+            bits,
+        } = msg;
 
-    //    // Decompress the input.
-    //    int last_received_frame_number = _last_received_input.frame;
-    //    if (msg->u.input.num_bits) {
-    //       int offset = 0;
-    //       uint8 *bits = (uint8 *)msg->u.input.bits;
-    //       int numBits = msg->u.input.num_bits;
-    //       int currentFrame = msg->u.input.start_frame;
+        // If a disconnect is requested, go ahead and disconnect now.
+        if disconnect_requested {
+            if !self.state.is_disconnected() && !self.disconnect_event_sent {
+                info!("Disconnecting endpoint on remote request.");
+                //  QueueEvent(Event(Event::Disconnected));
+                self.disconnect_event_sent = true;
+            }
+        } else {
+            // Update the peer connection status if this peer is still considered to be part
+            // of the network.
+            for (i, remote_status) in peer_connect_status.iter().enumerate() {
+                if i < self.peer_connect_status.len() {
+                    debug_assert!(
+                        remote_status.last_frame >= self.peer_connect_status[i].last_frame
+                    );
+                    self.peer_connect_status[i].disconnected |= remote_status.disconnected;
+                    self.peer_connect_status[i].last_frame = std::cmp::max(
+                        self.peer_connect_status[i].last_frame,
+                        remote_status.last_frame,
+                    );
+                } else {
+                    self.peer_connect_status.push(remote_status.clone());
+                }
+            }
+        }
 
-    //       _last_received_input.size = msg->u.input.input_size;
-    //       if (_last_received_input.frame < 0) {
-    //          _last_received_input.frame = msg->u.input.start_frame - 1;
-    //       }
-    //       while (offset < numBits) {
-    //          /*
-    //           * Keep walking through the frames (parsing bits) until we reach
-    //           * the inputs for the frame right after the one we're on.
-    //           */
-    //          ASSERT(currentFrame <= (_last_received_input.frame + 1));
-    //          bool useInputs = currentFrame == _last_received_input.frame + 1;
+        // Decompress the input.
+        let last_received_frame_number = self.last_received_input.frame;
+        if crate::is_null(self.last_received_input.frame) {
+            self.last_received_input.frame = start_frame - 1;
+        }
+        match compression::decode(&self.last_received_input.input, bits) {
+            Ok(inputs) => {
+                let current_frame = self.last_received_input.frame;
+                let frame_inputs = inputs
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, input)| FrameInput::<T::Input> {
+                        frame: start_frame + i as i32,
+                        input,
+                    })
+                    .filter(|input| input.frame > current_frame);
+                for input in frame_inputs {
+                    // TODO(james7132): Push event upwards
+                    self.last_received_input = input.clone();
+                }
+            }
+            Err(err) => {
+                error!("Error while decoding inputs, discarding: {:?}", err);
+                return;
+            }
+        };
+        debug_assert!(self.last_received_input.frame >= last_received_frame_number);
 
-    //          while (BitVector_ReadBit(bits, &offset)) {
-    //             int on = BitVector_ReadBit(bits, &offset);
-    //             int button = BitVector_ReadNibblet(bits, &offset);
-    //             if (useInputs) {
-    //                if (on) {
-    //                   _last_received_input.set(button);
-    //                } else {
-    //                   _last_received_input.clear(button);
-    //                }
-    //             }
-    //          }
-    //          ASSERT(offset <= numBits);
+        // Get rid of our buffered input
+        self.on_input_ack(ack_frame);
+    }
 
-    //          /*
-    //           * Now if we want to use these inputs, go ahead and send them to
-    //           * the emulator.
-    //           */
-    //          if (useInputs) {
-    //             /*
-    //              * Move forward 1 frame in the stream.
-    //              */
-    //             char desc[1024];
-    //             ASSERT(currentFrame == _last_received_input.frame + 1);
-    //             _last_received_input.frame = currentFrame;
-
-    //             /*
-    //              * Send the event to the emualtor
-    //              */
-    //             UdpProtocol::Event evt(UdpProtocol::Event::Input);
-    //             evt.u.input.input = _last_received_input;
-
-    //             _last_received_input.desc(desc, ARRAY_SIZE(desc));
-
-    //             _state.running.last_input_packet_recv_time = Platform::GetCurrentTimeMS();
-
-    //             Log("Sending frame %d to emu queue %d (%s).\n", _last_received_input.frame, _queue, desc);
-    //             QueueEvent(evt);
-
-    //          } else {
-    //             Log("Skipping past frame:(%d) current is %d.\n", currentFrame, _last_received_input.frame);
-    //          }
-
-    //          /*
-    //           * Move forward 1 frame in the input stream.
-    //           */
-    //          currentFrame++;
-    //       }
-    //    }
-    //    ASSERT(_last_received_input.frame >= last_received_frame_number);
-
-    //    // Get rid of our buffered input
-    //    while (_pending_output.size() && _pending_output.front().frame < msg->u.input.ack_frame) {
-    //       Log("Throwing away pending output frame %d\n", _pending_output.front().frame);
-    //       _last_acked_input = _pending_output.front();
-    //       _pending_output.pop();
-    //    }
-    //    return true;
-    // }
-
-    fn on_input_ack(&mut self, ack_frame: Frame) -> bool {
+    fn on_input_ack(&mut self, ack_frame: Frame) {
         // Get rid of our buffered input
         while !self.pending_output.is_empty()
             && self.pending_output.back().unwrap().frame < ack_frame
@@ -697,18 +670,15 @@ impl<T: BackrollConfig> BackrollPeer<T> {
                 self.last_acked_input.frame
             );
         }
-        true
     }
 
-    fn on_quality_report(&mut self, frame_advantage: Frame, ping: u32) -> bool {
+    fn on_quality_report(&mut self, frame_advantage: Frame, ping: UnixMillis) {
         self.remote_frame_advantage = frame_advantage;
         self.send(MessageData::QualityReply { pong: ping });
-        true
     }
 
-    fn on_quality_reply(&mut self, pong: UnixMillis) -> bool {
+    fn on_quality_reply(&mut self, pong: UnixMillis) {
         self.round_trip_time = UnixMillis::now() - pong;
-        true
     }
 
     pub fn set_local_frame_number(&mut self, local_frame: Frame) {
@@ -754,7 +724,7 @@ pub struct Message {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum MessageData {
+enum MessageData {
     KeepAlive,
     SyncRequest {
         random_request: u32,
@@ -763,23 +733,26 @@ pub enum MessageData {
     SyncReply {
         random_reply: u32,
     },
-    Input {
-        peer_connect_status: Vec<ConnectionStatus>,
-        start_frame: Frame,
-        ack_frame: Frame,
-        disconnect_requested: bool,
-        bits: Vec<u8>,
-    },
+    Input(InputMessage),
     QualityReport {
         frame_advantage: i32,
         ping: UnixMillis,
     },
     QualityReply {
-        pong: u32,
+        pong: UnixMillis,
     },
     InputAck {
         ack_frame: Frame,
     },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct InputMessage {
+    peer_connect_status: Vec<ConnectionStatus>,
+    start_frame: Frame,
+    ack_frame: Frame,
+    disconnect_requested: bool,
+    bits: Vec<u8>,
 }
 
 struct Stats {

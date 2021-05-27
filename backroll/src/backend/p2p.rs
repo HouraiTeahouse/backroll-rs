@@ -11,32 +11,145 @@ use std::time::Duration;
 use tracing::info;
 
 const RECOMMENDATION_INTERVAL: Frame = 240;
+const DEFAULT_DISCONNECT_TIMEOUT: Duration = Duration::from_millis(5000);
+const DEFAULT_DISCONNECT_NOTIFY_START: Duration = Duration::from_millis(750);
 
-pub struct P2PBackend<T>
+enum Player<T>
+where
+    T: BackrollConfig,
+{
+    Local,
+    Remote(BackrollPeer<T>),
+    Spectator(BackrollPeer<T>),
+}
+
+impl<T: BackrollConfig> Player<T> {
+    pub fn peer(&self) -> Option<&BackrollPeer<T>> {
+        match self {
+            Self::Local => None,
+            Self::Remote(ref peer) => Some(peer),
+            Self::Spectator(ref peer) => Some(peer),
+        }
+    }
+
+    pub fn is_local(&self) -> bool {
+        self.peer().is_none()
+    }
+
+    pub fn is_remote_player(&self) -> bool {
+        if let Self::Remote(peer) = self {
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn is_spectator(&self) -> bool {
+        if let Self::Spectator(peer) = self {
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn is_synchronized(&self) -> bool {
+        if let Some(peer) = self.peer() {
+            peer.is_running()
+        } else {
+            true
+        }
+    }
+
+    pub fn send_input(&mut self, input: FrameInput<T::Input>) {
+        if let Some(peer) = self.peer() {
+            peer.send_input(input);
+        }
+    }
+
+    pub fn disconnect(&mut self) {
+        if let Some(peer) = self.peer() {
+            peer.disconnect();
+        }
+    }
+
+    pub fn get_network_stats(&self) -> Option<NetworkStats> {
+        self.peer().map(|peer| peer.get_network_stats())
+    }
+}
+
+pub struct P2PSessionBuilder<T>
+where
+    T: BackrollConfig,
+{
+    players: Vec<BackrollPlayer>,
+    callbacks: Box<dyn SessionCallbacks<T>>,
+    disconnect_timeout: Duration,
+    disconnect_notify_start: Duration,
+    marker_: std::marker::PhantomData<T>,
+}
+
+impl<T> P2PSessionBuilder<T>
+where
+    T: BackrollConfig,
+{
+    pub fn new(callbacks: Box<dyn SessionCallbacks<T>>) -> Self {
+        Self {
+            players: Vec::new(),
+            callbacks,
+            disconnect_timeout: DEFAULT_DISCONNECT_TIMEOUT,
+            disconnect_notify_start: DEFAULT_DISCONNECT_NOTIFY_START,
+            marker_: Default::default(),
+        }
+    }
+
+    pub fn with_disconnect_timeout(mut self, timeout: Duration) -> Self {
+        self.disconnect_timeout = timeout;
+        self
+    }
+
+    pub fn with_disconnect_notify_start(mut self, timeout: Duration) -> Self {
+        self.disconnect_timeout = timeout;
+        self
+    }
+
+    pub fn add_player(&mut self, player: BackrollPlayer) -> BackrollPlayerHandle {
+        let id = self.players.len();
+        self.players.push(player);
+        BackrollPlayerHandle(id)
+    }
+
+    pub fn start(self) -> P2PSession<T> {
+        P2PSession::new_internal(self)
+    }
+}
+
+pub struct P2PSession<T>
 where
     T: BackrollConfig,
 {
     sync: BackrollSync<T>,
-    players: Vec<BackrollPlayer<T>>,
+    players: Vec<Player<T>>,
 
     synchronizing: bool,
     next_recommended_sleep: Frame,
     next_spectator_frame: Frame,
 
-    disconnect_timeout: Option<Duration>,
-    disconnect_notify_start: Option<Duration>,
-
     local_connect_status: Arc<[RwLock<ConnectionStatus>]>,
 }
 
-impl<T: BackrollConfig> P2PBackend<T> {
-    pub fn new(callbacks: Box<dyn SessionCallbacks<T>>, player_count: usize) -> Self {
+impl<T: BackrollConfig> P2PSession<T> {
+    pub fn build(callbacks: Box<dyn SessionCallbacks<T>>) -> P2PSessionBuilder<T> {
+        P2PSessionBuilder::new(callbacks)
+    }
+
+    fn new_internal(builder: P2PSessionBuilder<T>) -> Self {
+        let player_count = builder.players.len();
         let connect_status: Vec<RwLock<ConnectionStatus>> =
             (0..player_count).map(|_| Default::default()).collect();
         let connect_status: Arc<[RwLock<ConnectionStatus>]> = connect_status.into();
 
         let config = sync::Config::<T> {
-            callbacks,
+            callbacks: builder.callbacks,
             player_count,
         };
         let sync = BackrollSync::<T>::new(config, connect_status.clone());
@@ -46,8 +159,6 @@ impl<T: BackrollConfig> P2PBackend<T> {
             synchronizing: true,
             next_recommended_sleep: 0,
             next_spectator_frame: 0,
-            disconnect_timeout: T::DEFAULT_DISCONNECT_TIMEOUT,
-            disconnect_notify_start: T::DEFAULT_DISCONNECT_NOTIFY_START,
             local_connect_status: connect_status,
         }
     }
@@ -57,14 +168,6 @@ impl<T: BackrollConfig> P2PBackend<T> {
             .iter()
             .filter(|player| player.is_remote_player())
             .map(|player| player.peer())
-            .flatten()
-    }
-
-    fn players_mut(&mut self) -> impl Iterator<Item = &mut BackrollPeer<T>> {
-        self.players
-            .iter_mut()
-            .filter(|player| player.is_remote_player())
-            .map(|player| player.peer_mut())
             .flatten()
     }
 
@@ -90,7 +193,7 @@ impl<T: BackrollConfig> P2PBackend<T> {
         // notify all of our endpoints of their local frame number for their
         // next connection quality report
         let current_frame = self.sync.frame_count();
-        for player in self.players_mut() {
+        for player in self.players() {
             player.set_local_frame_number(current_frame);
         }
 
@@ -122,7 +225,7 @@ impl<T: BackrollConfig> P2PBackend<T> {
         // send timesync notifications if now is the proper time
         if current_frame > self.next_recommended_sleep {
             let interval = self
-                .players_mut()
+                .players()
                 .map(|player| player.recommend_frame_delay())
                 .max();
             if let Some(interval) = interval {
@@ -142,7 +245,7 @@ impl<T: BackrollConfig> P2PBackend<T> {
             let player = &self.players[i];
             let mut queue_connected = true;
             if let Some(peer) = player.peer() {
-                if peer.state().is_running() {
+                if peer.is_running() {
                     queue_connected = !peer.get_peer_connect_status(i).disconnected;
                 }
             }
@@ -174,11 +277,7 @@ impl<T: BackrollConfig> P2PBackend<T> {
                 // we're going to do a lot of logic here in consideration of endpoint i.
                 // keep accumulating the minimum confirmed point for all n*n packets and
                 // throw away the rest.
-                if player
-                    .peer()
-                    .map(|peer| peer.state().is_running())
-                    .unwrap_or(false)
-                {
+                if player.peer().map(|peer| peer.is_running()).unwrap_or(false) {
                     let peer = player.peer().unwrap();
                     let status = peer.get_peer_connect_status(queue);
                     queue_connected = queue_connected && !status.disconnected;
@@ -214,18 +313,6 @@ impl<T: BackrollConfig> P2PBackend<T> {
             info!("min_frame = {}.", min_frame);
         }
         return min_frame;
-    }
-
-    pub fn add_player(
-        &mut self,
-        mut player: BackrollPlayer<T>,
-    ) -> BackrollResult<BackrollPlayerHandle> {
-        // TODO(james7132): Ensure this does not exceed maximum number of supported players.
-        let handle = BackrollPlayerHandle(self.players.len());
-        player.set_disconnect_timeout(self.disconnect_timeout);
-        player.set_disconnect_notify_start(self.disconnect_notify_start);
-        self.players.push(player);
-        Ok(handle)
     }
 
     pub fn add_local_input(
@@ -347,26 +434,6 @@ impl<T: BackrollConfig> P2PBackend<T> {
     ) -> BackrollResult<()> {
         let queue = self.player_handle_to_queue(player)?;
         self.sync.set_frame_delay(queue, delay);
-        Ok(())
-    }
-
-    pub fn set_disconnect_timeout(&mut self, timeout: Option<Duration>) -> BackrollResult<()> {
-        self.disconnect_timeout = timeout;
-        for player in self.players.iter_mut() {
-            if !player.is_local() {
-                player.set_disconnect_timeout(timeout);
-            }
-        }
-        Ok(())
-    }
-
-    pub fn set_disconnect_notify_start(&mut self, timeout: Option<Duration>) -> BackrollResult<()> {
-        self.disconnect_notify_start = timeout;
-        for player in self.players.iter_mut() {
-            if !player.is_local() {
-                player.set_disconnect_notify_start(timeout);
-            }
-        }
         Ok(())
     }
 

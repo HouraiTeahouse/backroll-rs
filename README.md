@@ -21,19 +21,17 @@ future.
    the sizes of many data types.
  * Vectorized input compression scheme - Backroll utilizes the same XOR + RLE
    encoding, but it's written to maximize CPU utilization.
+ * Multithreaded I/O - All network communications run within an async task pool.
+   I/O polling is no longer manual, nor blocks your game's execution.
 
 ## Planned features
-
- * Thread-safety - the transport layer abstractions. Currently the main data
-   structures are not `Sync` nor `Send`.
  * Rust game engine integrations (bevy, amethyst, Piston, etc).
 
 ## Repository Structure
-
 This repo contains the following crates:
 
  * backroll - the main Backroll interface, intended to be used as the original
-   GGPO. (Partially complete)
+   GGPO. (Mostly complete)
  * backroll\_transport - An isolated set of transport layer abstractions. (In
    progress)
  * backroll\_transport\_udp - A transport layer implementation using raw UDP

@@ -1,18 +1,14 @@
 use async_channel::{TryRecvError, TrySendError};
 use core::hash::Hash;
-use std::collections::HashMap;
+use std::{collections::HashMap, ops::Deref};
 
-pub(crate) type MessageSender = async_channel::Sender<Box<[u8]>>;
-pub(crate) type MessageReciever = async_channel::Receiver<Box<[u8]>>;
-
-/// A bidirectional channel for binary messages.
 #[derive(Clone)]
-pub struct Peer {
-    incoming: MessageReciever,
-    outgoing: MessageSender,
+pub struct BidirectionalAsyncChannel<T> {
+    incoming: async_channel::Receiver<T>,
+    outgoing: async_channel::Sender<T>,
 }
 
-impl Peer {
+impl<T> BidirectionalAsyncChannel<T> {
     /// Creates a pair of connected Peers without limitations on
     /// how many messages can be buffered.
     pub fn create_unbounded_pair() -> (Self, Self) {
@@ -35,7 +31,7 @@ impl Peer {
     ///
     /// If the peer is disconnected, this method returns an error.
     #[inline]
-    pub fn send(&self, message: Box<[u8]>) -> async_channel::Send<'_, Box<[u8]>> {
+    pub fn send(&self, message: T) -> async_channel::Send<'_, T> {
         self.outgoing.send(message)
     }
 
@@ -47,19 +43,19 @@ impl Peer {
     /// If the peer is disconnected, this method receives a message or returns
     /// an error if there are no more messages.
     #[inline]
-    pub fn recv(&self) -> async_channel::Recv<'_, Box<[u8]>> {
+    pub fn recv(&self) -> async_channel::Recv<'_, T> {
         self.incoming.recv()
     }
 
     /// Attempts to send a message to the connected peer.
     #[inline]
-    pub fn try_send(&self, message: Box<[u8]>) -> Result<(), TrySendError<Box<[u8]>>> {
+    pub fn try_send(&self, message: T) -> Result<(), TrySendError<T>> {
         self.outgoing.try_send(message)
     }
 
     /// Attempts to receive a message from the connected peer.
     #[inline]
-    pub fn try_recv(&self) -> Result<Box<[u8]>, TryRecvError> {
+    pub fn try_recv(&self) -> Result<T, TryRecvError> {
         self.incoming.try_recv()
     }
 
@@ -80,12 +76,12 @@ impl Peer {
     }
 
     /// Gets the raw sender for the peer.
-    pub fn sender(&self) -> async_channel::Sender<Box<[u8]>> {
+    pub fn sender(&self) -> async_channel::Sender<T> {
         self.outgoing.clone()
     }
 
     /// Gets the raw reciever for the peer.
-    pub fn reciever(&self) -> async_channel::Receiver<Box<[u8]>> {
+    pub fn reciever(&self) -> async_channel::Receiver<T> {
         self.incoming.clone()
     }
 
@@ -102,8 +98,8 @@ impl Peer {
     }
 
     fn create_pair(
-        a: (MessageSender, MessageReciever),
-        b: (MessageSender, MessageReciever),
+        a: (async_channel::Sender<T>, async_channel::Receiver<T>),
+        b: (async_channel::Sender<T>, async_channel::Receiver<T>),
     ) -> (Self, Self) {
         let (a_send, a_recv) = a;
         let (b_send, b_recv) = b;
@@ -116,6 +112,33 @@ impl Peer {
             outgoing: a_send,
         };
         (a, b)
+    }
+}
+
+/// A bidirectional channel for binary messages.
+#[derive(Clone)]
+pub struct Peer(BidirectionalAsyncChannel<Box<[u8]>>);
+
+impl Peer {
+    /// Creates a pair of connected Peers without limitations on
+    /// how many messages can be buffered.
+    pub fn create_unbounded_pair() -> (Self, Self) {
+        let (a, b) = BidirectionalAsyncChannel::create_unbounded_pair();
+        (Self(a), Self(b))
+    }
+
+    /// Creates a pair of connected Peers with a limited capacity
+    /// for many messages can be buffered in either direction.
+    pub fn create_bounded_pair(capacity: usize) -> (Self, Self) {
+        let (a, b) = BidirectionalAsyncChannel::create_bounded_pair(capacity);
+        (Self(a), Self(b))
+    }
+}
+
+impl Deref for Peer {
+    type Target = BidirectionalAsyncChannel<Box<[u8]>>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 

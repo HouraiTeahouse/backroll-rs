@@ -1,3 +1,4 @@
+use self::event::*;
 use self::input_buffer::*;
 use self::message::*;
 use super::{
@@ -5,25 +6,35 @@ use super::{
     time_sync::{TimeSync, UnixMillis},
     BackrollConfig, Frame, NetworkStats,
 };
-use async_channel::TrySendError;
-use backroll_transport::connection::Peer;
+use backroll_transport::connection::{BidirectionalAsyncChannel, Peer};
+use futures::FutureExt;
+use futures_timer::Delay;
 use parking_lot::RwLock;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
 use std::num::Wrapping;
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::{error, info};
+use tracing::{debug, error, info};
+
+pub(crate) use event::Event;
 
 mod compression;
+mod event;
 mod input_buffer;
 mod message;
+
+pub enum PeerError {
+    LocalDisconnected,
+    RemoteDisconnected,
+    InvalidMessage,
+}
 
 const MSG_MAX_PLAYERS: usize = 8;
 const UDP_HEADER_SIZE: usize = 28; /* Size of IP + UDP headers */
 const NUM_SYNC_PACKETS: u8 = 5;
 const TARGET_TPS: u64 = 60;
+const POLL_INTERVAL: Duration = Duration::from_millis(1000 / TARGET_TPS);
 const SYNC_RETRY_INTERVAL: Duration = Duration::from_millis(2000);
 const SYNC_FIRST_RETRY_INTERVAL: Duration = Duration::from_millis(500);
 const RUNNING_RETRY_INTERVAL: Duration = Duration::from_millis(200);
@@ -35,29 +46,76 @@ const MAX_SEQ_DISTANCE: Wrapping<u16> = Wrapping(1 << 15);
 
 #[derive(Clone, Copy, Debug)]
 pub enum PeerState {
-    Syncing {
-        roundtrips_remaining: u8,
+    Connecting {
         random: u32,
     },
+    Syncing {
+        random: u32,
+        roundtrips_remaining: u8,
+    },
     Running {
-        last_quality_report_time: UnixMillis,
-        last_network_stats_interval: UnixMillis,
-        last_input_packet_recv_time: UnixMillis,
+        remote_magic: u16,
+    },
+    Interrupted {
+        remote_magic: u16,
     },
     Disconnected,
 }
 
 impl PeerState {
+    pub fn random(&self) -> Option<u32> {
+        match *self {
+            Self::Connecting { random } => Some(random),
+            Self::Syncing { random, .. } => Some(random),
+            _ => None,
+        }
+    }
+
     pub fn is_running(&self) -> bool {
-        if let Self::Running { .. } = self {
+        match self {
+            Self::Running { .. } => true,
+            Self::Interrupted { .. } => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_disconnected(&self) -> bool {
+        if let Self::Disconnected = self {
             true
         } else {
             false
         }
     }
 
-    pub fn is_disconnected(&self) -> bool {
-        if let Self::Disconnected = self {
+    pub fn is_interrupted(&self) -> bool {
+        if let Self::Interrupted { .. } = self {
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn start_syncing(&mut self, round_trips: u8) {
+        if let Self::Connecting { random } = *self {
+            *self = Self::Syncing {
+                random,
+                roundtrips_remaining: round_trips,
+            };
+        }
+    }
+
+    pub fn interrupt(&mut self) -> bool {
+        if let Self::Running { remote_magic } = *self {
+            *self = Self::Interrupted { remote_magic };
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn resume(&mut self) -> bool {
+        if let Self::Interrupted { remote_magic } = *self {
+            *self = Self::Running { remote_magic };
             true
         } else {
             false
@@ -74,151 +132,141 @@ impl Default for PeerState {
     }
 }
 
-pub struct BackrollPeer<T>
+#[derive(Default)]
+struct PeerStats {
+    pub packets_sent: usize,
+    pub bytes_sent: usize,
+    pub last_send_time: Option<UnixMillis>,
+    pub last_recv_time: Option<UnixMillis>,
+    pub last_input_packet_recv_time: UnixMillis,
+    pub round_trip_time: Duration,
+    pub kbps_sent: u32,
+
+    pub local_frame_advantage: Frame,
+    pub remote_frame_advantage: Frame,
+}
+
+#[derive(Clone)]
+pub(crate) struct BackrollPeerConfig {
+    pub peer: Peer,
+    pub disconnect_timeout: Option<Duration>,
+    pub disconnect_notify_start: Option<Duration>,
+}
+
+#[derive(Clone)]
+pub(crate) struct BackrollPeer<T>
 where
     T: BackrollConfig,
 {
     queue: usize,
-
-    magic_number: u16,
-    remote_magic_number: Option<u16>,
-
-    peer: Peer,
+    config: BackrollPeerConfig,
     timesync: TimeSync<T::Input>,
-    state: PeerState,
+    state: Arc<RwLock<PeerState>>,
 
-    shutdown_timeout: UnixMillis,
-    disconnect_timeout: Option<Duration>,
-    disconnect_notify_start: Option<Duration>,
-    disconnect_notify_sent: bool,
-    disconnect_event_sent: bool,
-
-    connected: bool,
-
-    packets_sent: usize,
-    bytes_sent: usize,
-    stats_start_time: Option<UnixMillis>,
-    last_send_time: Option<UnixMillis>,
-    last_recv_time: Option<UnixMillis>,
-    round_trip_time: Duration,
-    kbps_sent: u32,
-    peer_connect_status: Vec<ConnectionStatus>,
+    stats: Arc<RwLock<PeerStats>>,
     local_connect_status: Arc<[RwLock<ConnectionStatus>]>,
-
-    local_frame_advantage: Frame,
-    remote_frame_advantage: Frame,
-
-    next_send_seq: Wrapping<u16>,
-    next_recv_seq: Wrapping<u16>,
+    peer_connect_status: Vec<ConnectionStatus>,
 
     input_encoder: InputEncoder<T::Input>,
     input_decoder: InputDecoder<T::Input>,
+
+    message_in: async_channel::Receiver<Message>,
+    message_out: async_channel::Sender<MessageData>,
+    events: async_channel::Sender<Event<T::Input>>,
 }
 
 impl<T: BackrollConfig> BackrollPeer<T> {
     pub fn new(
         queue: usize,
-        peer: Peer,
+        config: BackrollPeerConfig,
         local_connect_status: Arc<[RwLock<ConnectionStatus>]>,
-    ) -> Self {
-        let mut rng = rand::thread_rng();
-        let mut magic = rng.next_u32() as u16;
-        while magic == 0 {
-            magic = rng.next_u32() as u16;
-        }
-        Self {
+    ) -> (Self, async_channel::Receiver<Event<T::Input>>) {
+        let (deserialize_send, message_in) = async_channel::unbounded::<Message>();
+        let (message_out, serialze_recv) = async_channel::unbounded::<MessageData>();
+        let (events, events_rx) = async_channel::unbounded();
+
+        let peer = Self {
             queue,
-            timesync: TimeSync::default(),
+            config,
+            timesync: Default::default(),
+            state: Default::default(),
 
-            magic_number: magic,
-            remote_magic_number: None,
-
-            peer,
-            state: PeerState::default(),
-
-            shutdown_timeout: UnixMillis::from_millis(0),
-            disconnect_timeout: None,
-            disconnect_notify_start: None,
-            disconnect_notify_sent: false,
-            disconnect_event_sent: false,
-
-            connected: false,
-
-            packets_sent: 0,
-            bytes_sent: 0,
-            stats_start_time: None,
-            last_send_time: None,
-            last_recv_time: None,
-            round_trip_time: Duration::from_millis(0),
-            kbps_sent: 0,
-
-            peer_connect_status: Vec::new(),
+            stats: Default::default(),
             local_connect_status,
-
-            local_frame_advantage: 0,
-            remote_frame_advantage: 0,
+            peer_connect_status: Default::default(),
 
             input_encoder: Default::default(),
             input_decoder: Default::default(),
-            next_send_seq: Wrapping(0),
-            next_recv_seq: Wrapping(0),
-        }
+
+            message_in,
+            message_out,
+            events,
+        };
+
+        // let serializer = io_pool.spawn(self.clone().serialize_outgoing(
+        //     serialize.reciever().clone(),
+        //     peer.sender().clone()
+        // ));
+        // let network_stats = io_pool.spawn(Self::update_network_stats(
+        //     state.clone(), stats.clone(), NETWORK_STATS_INTERVAL
+        // ));
+
+        // let (msg_tx, msg_rx) = async_channel::unbounded();
+        // let quality_reports = io_pool.spawn(Self::send_quality_reports(QUALITY_REPORT_INTERVAL, msg_tx.clone()));
+        // let network_stats = io_pool.spawn(self.update_network_stats(NETWORK_STATS_INTERVAL));
+        // let flush_packets = io_pool.spawn(self.serialize_outgoing());
+        // let incoming = io_pool.spawn(self.handle_incoming_messages());
+
+        (peer, events_rx)
     }
 
-    pub fn state(&self) -> &PeerState {
-        &self.state
+    pub fn is_running(&self) -> bool {
+        self.state.read().is_running()
     }
 
-    pub fn disconnect(&mut self) {
-        self.state = PeerState::Disconnected;
-        self.shutdown_timeout = UnixMillis::now() + UDP_SHUTDOWN_TIMER;
+    pub async fn disconnect(&self) {
+        *self.state.write() = PeerState::Disconnected;
+        self.message_in.close();
+        self.message_out.close();
+        self.events.close();
     }
 
-    pub fn set_disconnect_timeout(&mut self, timeout: Option<Duration>) {
-        self.disconnect_timeout = timeout;
+    async fn push_event(&self, evt: Event<T::Input>) -> Result<(), PeerError> {
+        // Failure to send just means
+        self.events
+            .send(evt)
+            .await
+            .map_err(|_| PeerError::LocalDisconnected)
     }
 
-    pub fn set_disconnect_notify_start(&mut self, timeout: Option<Duration>) {
-        self.disconnect_notify_start = timeout;
+    async fn send(&self, msg: impl Into<MessageData>) -> Result<(), PeerError> {
+        self.message_out
+            .send(msg.into())
+            .await
+            .map_err(|_| PeerError::RemoteDisconnected)
     }
 
     pub fn get_network_stats(&self) -> NetworkStats {
+        let stats = self.stats.read();
         NetworkStats {
-            ping: self.round_trip_time,
-            send_queue_len: self.peer.pending_send_count(),
-            recv_queue_len: self.peer.pending_recv_count(),
-            kbps_sent: self.kbps_sent,
+            ping: stats.round_trip_time,
+            send_queue_len: self.message_out.len(),
+            recv_queue_len: self.message_in.len(),
+            kbps_sent: stats.kbps_sent,
 
-            local_frames_behind: self.local_frame_advantage,
-            remote_frames_behind: self.remote_frame_advantage,
+            local_frames_behind: stats.local_frame_advantage,
+            remote_frames_behind: stats.remote_frame_advantage,
         }
     }
 
-    // void
-    // UdpProtocol::Init(Udp *udp,
-    //                   Poll &poll,
-    //                   int queue,
-    //                   char *ip,
-    //                   u_short port,
-    //                   UdpMsg::connect_status *status)
-    // {
-    //    _udp = udp;
-    //    _queue = queue;
-    //    _local_connect_status = status;
-
-    //    do {
-    //       _magic_number = (uint16)rand();
-    //    } while (_magic_number == 0);
-    //    poll.RegisterLoop(this);
-    // }
-
-    pub fn send_input(&mut self, input: FrameInput<T::Input>) {
-        if self.state.is_running() {
+    pub async fn send_input(&self, input: FrameInput<T::Input>) -> Result<(), PeerError> {
+        if self.state.read().is_running() {
+            let stats = self.stats.read();
             // Check to see if this is a good time to adjust for the rift...
             self.timesync.advance_frame(
                 input.clone(),
-                self.local_frame_advantage,
-                self.remote_frame_advantage,
+                stats.local_frame_advantage,
+                stats.remote_frame_advantage,
             );
 
             // Save this input packet
@@ -229,10 +277,10 @@ impl<T: BackrollConfig> BackrollPeer<T> {
             // the odds of this happening...
             self.input_encoder.push(input);
         }
-        self.send_pending_output();
+        self.send_pending_output().await
     }
 
-    fn send_pending_output(&mut self) {
+    async fn send_pending_output(&self) -> Result<(), PeerError> {
         let (start_frame, bits) = self.input_encoder.encode();
         self.send(Input {
             peer_connect_status: self
@@ -242,420 +290,451 @@ impl<T: BackrollConfig> BackrollPeer<T> {
                 .collect(),
             start_frame,
             ack_frame: self.input_decoder.last_decoded_frame(),
-            disconnect_requested: self.state.is_disconnected(),
             bits,
-        });
+        })
+        .await
     }
 
-    pub fn send_input_ack(&mut self) {
+    async fn send_input_ack(&self) -> Result<(), PeerError> {
         self.send(InputAck {
             ack_frame: self.input_decoder.last_decoded_frame(),
-        });
+        })
+        .await
     }
 
-    // bool
-    // UdpProtocol::GetEvent(UdpProtocol::Event &e)
-    // {
-    //    if (_event_queue.size() == 0) {
-    //       return false;
-    //    }
-    //    e = _event_queue.front();
-    //    _event_queue.pop();
-    //    return true;
+    async fn heartbeat(self, interval: Duration) {
+        while let Ok(()) = self.send(MessageData::KeepAlive).await {
+            debug!("Sent keep alive packet");
+            Delay::new(interval).await;
+        }
+    }
+
+    async fn send_quality_reports(self, interval: Duration) -> Result<(), PeerError> {
+        debug!("Starting quality reports to queue: {}", self.queue);
+        let mut result = Ok(());
+        while self.is_running() {
+            let frame_advantage = self.stats.read().local_frame_advantage;
+            let msg = QualityReport {
+                ping: UnixMillis::now(),
+                frame_advantage,
+            };
+            // Erroring means disconnection.
+            if let Err(err) = self.send(msg).await {
+                result = Err(err);
+                break;
+            }
+            Delay::new(interval).await;
+        }
+        debug!("Stopped sending quality reports to: {}", self.queue);
+        result
+    }
+
+    async fn resend_inputs(self, interval: Duration) -> Result<(), PeerError> {
+        while self.is_running() {
+            {
+                let mut stats = self.stats.write();
+                let now = UnixMillis::now();
+                // xxx: rig all this up with a timer wrapper
+                if stats.last_input_packet_recv_time + RUNNING_RETRY_INTERVAL < now {
+                    debug!("Haven't exchanged packets in a while (last received: {}  last sent: {}).  Resending.", 
+                        self.input_decoder.last_decoded_frame(),
+                        self.input_encoder.last_encoded_frame());
+                    stats.last_input_packet_recv_time = now;
+                    self.send_pending_output().await?;
+                }
+            }
+            Delay::new(interval).await;
+        }
+        Ok(())
+    }
+
+    // async fn connection_health_check(self) -> Result<(), PeerError> {
+    //     let mut disconnect_notified = false;
+    //     while self.is_running() {
+    //         Delay::new(POLL_INTERVAL).await;
+    //     }
+    //     Ok(())
     // }
 
-    pub fn manual_poll(&mut self) {
-        let now = UnixMillis::now();
-        let mut next_interval = Duration::from_millis(0);
-
-        match self.state {
-            PeerState::Syncing {
-                roundtrips_remaining,
-                random,
-            } => {
-                next_interval = if roundtrips_remaining == NUM_SYNC_PACKETS {
-                    SYNC_FIRST_RETRY_INTERVAL
-                } else {
-                    SYNC_RETRY_INTERVAL
-                };
-                if let Some(last_send_time) = self.last_send_time {
-                    if last_send_time + next_interval < now {
-                        info!(
-                            "No luck syncing after {:?} ms... Re-queueing sync packet.",
-                            next_interval
-                        );
-                        self.send_sync_request();
-                    }
-                }
-                self.state = PeerState::Syncing {
-                    roundtrips_remaining,
-                    random,
-                };
-            }
-            PeerState::Running {
-                mut last_input_packet_recv_time,
-                mut last_quality_report_time,
-                mut last_network_stats_interval,
-            } => {
-                // xxx: rig all this up with a timer wrapper
-                if last_input_packet_recv_time + RUNNING_RETRY_INTERVAL < now {
-                    info!("Haven't exchanged packets in a while (last received: {}  last sent: {}).  Resending.", 
-                          self.input_decoder.last_decoded_frame(),
-                          self.input_encoder.last_encoded_frame());
-                    last_input_packet_recv_time = now;
-                    self.send_pending_output();
-                }
-
-                if last_quality_report_time + QUALITY_REPORT_INTERVAL < now {
-                    last_quality_report_time = now;
-                    self.send(QualityReport {
-                        ping: now,
-                        frame_advantage: self.local_frame_advantage,
-                    });
-                }
-
-                if last_network_stats_interval + NETWORK_STATS_INTERVAL < now {
-                    last_network_stats_interval = now;
-                    self.update_network_stats();
-                }
-
-                if let Some(last_send_time) = self.last_send_time {
-                    if last_send_time + KEEP_ALIVE_INTERVAL < now {
-                        info!("Sending keep alive packet");
-                        self.send(MessageData::KeepAlive);
-                    }
-                }
-
-                let last_recv_time = self.last_recv_time.unwrap_or(now);
-
-                // FIXME(james7132): Properly fire this event
-                if let Some(timeout) = self.disconnect_timeout {
-                    if let Some(notify_start) = self.disconnect_notify_start {
-                        if !self.disconnect_notify_sent && (last_recv_time + notify_start < now) {
-                            info!("Endpoint has stopped receiving packets for {} ms.  Sending notification.", 
-                                notify_start.as_millis());
-                            // Event e(Event::NetworkInterrupted);
-                            // e.u.network_interrupted.disconnect_timeout = _disconnect_timeout - _disconnect_notify_start;
-                            // QueueEvent(e);
-                            self.disconnect_notify_sent = true;
+    async fn run(mut self) -> Result<(), PeerError> {
+        // let heartbeat = iu_pool.spawn(Self::heartbeat(KEEP_ALIVE_INTERVAL, msg_tx.clone()));
+        let mut last_recv_time = UnixMillis::now();
+        loop {
+            futures::select! {
+                 message = self.message_in.recv().fuse() => {
+                    let message = message.map_err(|_| PeerError::RemoteDisconnected)?;
+                    match self.handle_message(message).await {
+                        Ok(()) => {
+                            last_recv_time = UnixMillis::now();
+                            if self.state.write().resume() {
+                                self.push_event(Event::<T::Input>::NetworkResumed).await;
+                            }
+                        },
+                        Err(PeerError::InvalidMessage) => {
+                            error!("Invalid incoming message");
+                        },
+                        err => {
+                            self.disconnect().await;
+                            return err;
                         }
                     }
+                },
+                _ = Delay::new(POLL_INTERVAL).fuse() => {
+                    let now = UnixMillis::now();
+                    if let Some(timeout) = self.config.disconnect_timeout {
+                        if let Some(notify_start) = self.config.disconnect_notify_start {
+                            let mut state = self.state.write();
+                            if !state.is_interrupted() && (last_recv_time + notify_start < now) {
+                                state.interrupt();
+                                info!("Endpoint has stopped receiving packets for {} ms.  Sending notification.",
+                                        notify_start.as_millis());
+                                self.push_event(Event::<T::Input>::NetworkInterrupted {
+                                    disconnect_timeout: timeout - notify_start
+                                }).await?;
+                            }
+                        }
 
-                    if last_recv_time + timeout < now {
-                        if !self.disconnect_event_sent {
+                        if last_recv_time + timeout < now {
                             info!(
-                                "Endpoint has stopped receiving packets for {} ms.  Disconnecting.",
+                                "Endpoint has stopped receiving packets for {} ms. Disconnecting.",
                                 timeout.as_millis()
                             );
-                            // QueueEvent(Event(Event::Disconnected));
-                            self.disconnect_event_sent = true;
+                            self.disconnect().await;
+                            return Err(PeerError::RemoteDisconnected);
                         }
                     }
-                }
-                self.state = PeerState::Running {
-                    last_input_packet_recv_time,
-                    last_quality_report_time,
-                    last_network_stats_interval,
-                };
-            }
-            PeerState::Disconnected => {
-                if self.shutdown_timeout < now {
-                    info!("Shutting down udp connection.");
-                    self.shutdown_timeout = UnixMillis::from_millis(0);
-                }
+
+                    self.poll().await?;
+                },
             }
         }
     }
 
-    fn send(&mut self, message: impl Into<MessageData>) {
-        let message = Message {
-            magic: self.magic_number,
-            sequence_number: self.next_send_seq,
-            data: message.into(),
+    async fn poll(&mut self) -> Result<(), PeerError> {
+        let state = self.state.write();
+        let next_interval = match *state {
+            PeerState::Connecting { .. } => SYNC_FIRST_RETRY_INTERVAL,
+            PeerState::Syncing { .. } => SYNC_RETRY_INTERVAL,
+            _ => return Ok(()),
         };
-        self.next_send_seq += Wrapping(1);
-        let mut bytes = Vec::new();
-        {
-            let compressor = lz4_flex::frame::FrameEncoder::new(&mut bytes);
-            let mut bincode =
-                bincode::Serializer::new(compressor, bincode::config::DefaultOptions::new());
-            message
-                .serialize(&mut bincode)
-                .expect("Should not be producing invalid inputs.");
-        }
-        self.send_data(bytes.into());
-    }
-
-    fn send_data(&mut self, mut message: Box<[u8]>) {
-        let msg_size = message.len();
-        loop {
-            // Block until there is capacity to send.
-            message = match self.peer.try_send(message) {
-                Ok(_) => {
-                    self.packets_sent += 1;
-                    self.last_send_time = Some(UnixMillis::now());
-                    self.bytes_sent += msg_size;
-                    return;
-                }
-                Err(TrySendError::Full(msg)) => msg,
-                Err(TrySendError::Closed(_)) => {
-                    self.disconnect();
-                    error!("Failed to send message due to disconnection.");
-                    return;
-                }
+        let now = UnixMillis::now();
+        if let Some(last_send_time) = self.stats.read().last_send_time {
+            if last_send_time + next_interval < now {
+                info!(
+                    "No luck syncing after {:?} ms... Re-queueing sync packet.",
+                    next_interval
+                );
+                self.send_sync_request().await?;
             }
         }
+
+        Ok(())
     }
 
-    fn handle_message(&mut self, message: Message) {
-        let seq = message.sequence_number;
-        match &message.data {
-            MessageData::SyncRequest { .. } => {}
-            MessageData::SyncReply { .. } => {}
-            _ => {
-                if Some(message.magic) != self.remote_magic_number {
-                    info!("recv rejecting invalid magic number");
-                    return;
+    async fn serialize_outgoing(self, messages: async_channel::Receiver<MessageData>) {
+        let magic = {
+            let mut rng = rand::thread_rng();
+            let mut magic = rng.next_u32() as u16;
+            while magic == 0 {
+                magic = rng.next_u32() as u16;
+            }
+            magic
+        };
+
+        let mut next_send_seq = Wrapping(0);
+        while let Ok(data) = messages.recv().await {
+            let message = Message {
+                magic,
+                sequence_number: next_send_seq,
+                data,
+            };
+            next_send_seq += Wrapping(1);
+
+            let mut bytes = Vec::new();
+            {
+                let compressor = lz4_flex::frame::FrameEncoder::new(&mut bytes);
+                let mut bincode =
+                    bincode::Serializer::new(compressor, bincode::config::DefaultOptions::new());
+                message
+                    .serialize(&mut bincode)
+                    .expect("Should not be producing unserializable inputs.");
+            }
+
+            let msg_size = bytes.len();
+            if let Ok(()) = self.config.peer.send(bytes.into()).await {
+                let mut stats = self.stats.write();
+                stats.packets_sent += 1;
+                stats.last_send_time = Some(UnixMillis::now());
+                stats.bytes_sent += msg_size;
+            } else {
+                break;
+            }
+        }
+        debug!("Stopping sending of messages for queue: {}", self.queue);
+    }
+
+    async fn deserialize_incoming(
+        self,
+        messages: async_channel::Sender<Message>,
+    ) -> Result<(), PeerError> {
+        let mut next_recv_seq = Wrapping(0);
+
+        while let Ok(bytes) = self.config.peer.recv().await {
+            let decompressor = lz4_flex::frame::FrameDecoder::new(&*bytes);
+            let mut bincode = bincode::de::Deserializer::with_reader(
+                decompressor,
+                bincode::config::DefaultOptions::new(),
+            );
+            let message = match Message::deserialize(&mut bincode) {
+                Ok(message) => message,
+                Err(err) => {
+                    error!("Error while deserialilzing incoming message: {:?}", err);
+                    continue;
                 }
+            };
+
+            let seq = message.sequence_number;
+            if message.data.is_sync_message() {
+                if let PeerState::Running { remote_magic } = *self.state.read() {
+                    if message.magic != remote_magic {
+                        continue;
+                    }
+                }
+
                 // filter out out-of-order packets
-                let skipped = seq - self.next_recv_seq;
+                let skipped = seq - next_recv_seq;
                 if skipped > MAX_SEQ_DISTANCE {
                     info!(
                         "dropping out of order packet (seq: {}, last seq: {})",
-                        seq, self.next_recv_seq
+                        seq, next_recv_seq
                     );
-                    return;
+                    continue;
                 }
             }
+
+            next_recv_seq = message.sequence_number;
+            messages
+                .send(message)
+                .await
+                .map_err(|_| PeerError::LocalDisconnected)?;
         }
 
-        self.next_recv_seq = seq;
+        debug!("Stopped receiving messages for queue: {}", self.queue);
+        Ok(())
+    }
 
-        let mut handled = true;
+    async fn handle_message(&mut self, message: Message) -> Result<(), PeerError> {
         match message.data {
-            MessageData::KeepAlive => {}
-            MessageData::SyncRequest(data) => {
-                handled = self.on_sync_request(message.magic, data);
+            MessageData::KeepAlive => Ok(()),
+            MessageData::SyncRequest(data) => self.on_sync_request(message.magic, data).await,
+            MessageData::SyncReply(data) => self.on_sync_reply(message.magic, data).await,
+            MessageData::Input(input) => self.on_input(input).await,
+            MessageData::InputAck(data) => {
+                self.input_encoder.acknowledge_frame(data.ack_frame);
+                Ok(())
             }
-            MessageData::SyncReply(data) => {
-                handled = self.on_sync_reply(message.magic, data);
-            }
-            MessageData::Input(input) => self.on_input(input),
-            MessageData::InputAck(data) => self.input_encoder.acknowledge_frame(data.ack_frame),
-            MessageData::QualityReport(data) => self.on_quality_report(data),
-            MessageData::QualityReply(data) => self.on_quality_reply(data),
-        };
-
-        if handled {
-            self.last_recv_time = Some(UnixMillis::now());
-            if self.disconnect_notify_sent && self.state.is_running() {
-                // QueueEvent(Event(Event::NetworkResumed));
-                self.disconnect_notify_sent = false;
+            MessageData::QualityReport(data) => self.on_quality_report(data).await,
+            MessageData::QualityReply(data) => {
+                self.stats.write().round_trip_time = UnixMillis::now() - data.pong;
+                Ok(())
             }
         }
     }
 
-    fn on_sync_request(&mut self, magic: u16, data: SyncRequest) -> bool {
-        let SyncRequest { random } = data;
-        if let Some(remote_magic) = self.remote_magic_number {
-            if magic != remote_magic {
-                info!(
-                    "Ignoring sync request from unknown endpoint ({} != {:?}).",
-                    magic, remote_magic
-                );
-                return false;
-            }
-        }
-        self.send(SyncReply { random });
-        true
-    }
-
-    pub fn synchronize(&mut self) {
+    pub async fn synchronize(&self) -> Result<(), PeerError> {
+        let mut state = self.state.write();
         let random = rand::thread_rng().next_u32();
-        self.state = PeerState::Syncing {
+        *state = PeerState::Syncing {
             roundtrips_remaining: NUM_SYNC_PACKETS,
             random,
         };
-        self.send_sync_request();
+        self.send_sync_request().await
     }
 
-    pub fn send_sync_request(&mut self) {
-        if let PeerState::Syncing { random, .. } = self.state {
-            self.send(SyncRequest { random });
+    async fn send_sync_request(&self) -> Result<(), PeerError> {
+        if let PeerState::Syncing { random, .. } = *self.state.read() {
+            self.send(SyncRequest { random }).await
         } else {
             panic!("Sending sync request while not syncing.")
         }
     }
 
-    fn update_network_stats(&mut self) {
-        let now = UnixMillis::now();
+    async fn update_network_stats(
+        state: Arc<RwLock<PeerState>>,
+        stats: Arc<RwLock<PeerStats>>,
+        interval: Duration,
+    ) {
+        let mut start_time: Option<UnixMillis> = None;
 
-        if self.stats_start_time.is_none() {
-            self.stats_start_time = Some(now);
+        loop {
+            Delay::new(interval).await;
+
+            if !state.read().is_running() {
+                start_time = None;
+                continue;
+            }
+
+            let now = UnixMillis::now();
+            if start_time.is_none() {
+                start_time = Some(now);
+            }
+
+            let mut stats = stats.write();
+            let total_bytes_sent =
+                (stats.bytes_sent + (UDP_HEADER_SIZE * stats.packets_sent)) as f32;
+            let seconds = (now - start_time.unwrap()).as_millis() as f32 / 1000.0;
+            let bps = total_bytes_sent / seconds;
+            let udp_overhead =
+                100.0 * (UDP_HEADER_SIZE * stats.packets_sent) as f32 / stats.bytes_sent as f32;
+            stats.kbps_sent = (bps / 1024.0) as u32;
+
+            debug!(
+                "Network Stats -- Bandwidth: {} KBps   Packets Sent: {} ({} pps) \
+                KB Sent: {} UDP Overhead: {:.2}.",
+                stats.kbps_sent,
+                stats.packets_sent,
+                stats.packets_sent as f32 * 1000.0 / (now - start_time.unwrap()).as_millis() as f32,
+                total_bytes_sent / 1024.0,
+                udp_overhead
+            );
         }
-
-        let total_bytes_sent = (self.bytes_sent + (UDP_HEADER_SIZE * self.packets_sent)) as f32;
-        let seconds = (now - self.stats_start_time.unwrap()).as_millis() as f32 / 1000.0;
-        let bps = total_bytes_sent / seconds;
-        let udp_overhead =
-            100.0 * (UDP_HEADER_SIZE * self.packets_sent) as f32 / self.bytes_sent as f32;
-
-        self.kbps_sent = (bps / 1024.0) as u32;
-
-        info!(
-            "Network Stats -- Bandwidth: {} KBps   Packets Sent: {} ({} pps) \
-               KB Sent: {} UDP Overhead: {:.2}.",
-            self.kbps_sent,
-            self.packets_sent,
-            self.packets_sent as f32 * 1000.0
-                / (now - self.stats_start_time.unwrap()).as_millis() as f32,
-            total_bytes_sent / 1024.0,
-            udp_overhead
-        );
     }
 
     pub fn get_peer_connect_status(&self, id: usize) -> &ConnectionStatus {
         &self.peer_connect_status[id]
     }
 
-    // void
-    // UdpProtocol::QueueEvent(const UdpProtocol::Event &evt)
-    // {
-    //    _event_queue.push(evt);
-    // }
+    async fn on_sync_request(&mut self, magic: u16, data: SyncRequest) -> Result<(), PeerError> {
+        let SyncRequest { random } = data;
+        if let PeerState::Running { remote_magic } = *self.state.read() {
+            if magic != remote_magic {
+                info!(
+                    "Ignoring sync request from unknown endpoint ({} != {:?}).",
+                    magic, remote_magic
+                );
+                return Err(PeerError::InvalidMessage);
+            }
+        }
+        self.send(SyncReply { random }).await?;
+        Ok(())
+    }
 
-    fn on_sync_reply(&mut self, magic: u16, data: SyncReply) -> bool {
-        if let PeerState::Syncing {
-            random,
-            ref mut roundtrips_remaining,
-            ..
-        } = self.state
-        {
+    async fn on_sync_reply(&self, magic: u16, data: SyncReply) -> Result<(), PeerError> {
+        let mut state = self.state.write();
+        if let Some(random) = state.random() {
             if data.random != random {
                 info!("sync reply {} != {}.  Keep looking...", data.random, random);
-                return false;
+                return Err(PeerError::InvalidMessage);
             }
+        }
 
-            if !self.connected {
-                // QueueEvent(Event(Event::Connected));
-                self.connected = true;
+        match *state {
+            PeerState::Connecting { random } => {
+                self.push_event(Event::<T::Input>::Connected).await?;
+                state.start_syncing(NUM_SYNC_PACKETS);
+                Ok(())
             }
-
-            info!(
-                "Checking sync state ({} round trips remaining).",
-                *roundtrips_remaining
-            );
-            debug_assert!(*roundtrips_remaining > 0);
-            *roundtrips_remaining -= 1;
-            if *roundtrips_remaining == 0 {
-                info!("Synchronized queue {}!", self.queue);
-                // QueueEvent(UdpProtocol::Event(UdpProtocol::Event::Synchronzied));
-                let now = UnixMillis::now();
-                self.state = PeerState::Running {
-                    last_quality_report_time: now,
-                    last_network_stats_interval: now,
-                    last_input_packet_recv_time: now,
-                };
-                self.input_decoder.reset();
-                self.remote_magic_number = Some(magic);
-            } else {
-                // UdpProtocol::Event evt(UdpProtocol::Event::Synchronizing);
-                // evt.u.synchronizing.total = NUM_SYNC_PACKETS;
-                // evt.u.synchronizing.count = NUM_SYNC_PACKETS - _state.sync.roundtrips_remaining;
-                // QueueEvent(evt);
-                self.send_sync_request();
+            PeerState::Syncing {
+                random,
+                ref mut roundtrips_remaining,
+            } => {
+                info!(
+                    "Checking sync state ({} round trips remaining).",
+                    *roundtrips_remaining
+                );
+                debug_assert!(*roundtrips_remaining > 0);
+                *roundtrips_remaining -= 1;
+                if *roundtrips_remaining == 0 {
+                    info!("Synchronized queue {}!", self.queue);
+                    self.push_event(Event::<T::Input>::Synchronized).await?;
+                    self.input_decoder.reset();
+                    self.stats.write().last_input_packet_recv_time = UnixMillis::now();
+                    *state = PeerState::Running {
+                        remote_magic: magic,
+                    };
+                } else {
+                    self.push_event(Event::<T::Input>::Synchronizing {
+                        total: NUM_SYNC_PACKETS,
+                        count: NUM_SYNC_PACKETS - *roundtrips_remaining as u8,
+                    })
+                    .await?;
+                    self.send_sync_request().await?;
+                }
+                Ok(())
             }
-            true
-        } else {
-            info!("Ignoring SyncReply while not syncing.");
-            Some(magic) == self.remote_magic_number
+            PeerState::Running { remote_magic } if magic == remote_magic => return Ok(()),
+            _ => {
+                info!("Ignoring SyncReply while not syncing.");
+                return Err(PeerError::InvalidMessage);
+            }
         }
     }
 
-    fn on_input(&mut self, msg: Input) {
+    async fn on_input(&mut self, msg: Input) -> Result<(), PeerError> {
         let Input {
             peer_connect_status,
             start_frame,
             ack_frame,
-            disconnect_requested,
             bits,
         } = msg;
 
-        // If a disconnect is requested, go ahead and disconnect now.
-        if disconnect_requested {
-            if !self.state.is_disconnected() && !self.disconnect_event_sent {
-                info!("Disconnecting endpoint on remote request.");
-                //  QueueEvent(Event(Event::Disconnected));
-                self.disconnect_event_sent = true;
-            }
-        } else {
-            // Update the peer connection status if this peer is still considered to be part
-            // of the network.
-            for (i, remote_status) in peer_connect_status.iter().enumerate() {
-                if i < self.peer_connect_status.len() {
-                    debug_assert!(
-                        remote_status.last_frame >= self.peer_connect_status[i].last_frame
-                    );
-                    self.peer_connect_status[i].disconnected |= remote_status.disconnected;
-                    self.peer_connect_status[i].last_frame = std::cmp::max(
-                        self.peer_connect_status[i].last_frame,
-                        remote_status.last_frame,
-                    );
-                } else {
-                    self.peer_connect_status.push(remote_status.clone());
-                }
+        // Update the peer connection status if this peer is still considered to be part
+        // of the network.
+        for (i, remote_status) in peer_connect_status.iter().enumerate() {
+            if i < self.peer_connect_status.len() {
+                debug_assert!(remote_status.last_frame >= self.peer_connect_status[i].last_frame);
+                self.peer_connect_status[i].disconnected |= remote_status.disconnected;
+                self.peer_connect_status[i].last_frame = std::cmp::max(
+                    self.peer_connect_status[i].last_frame,
+                    remote_status.last_frame,
+                );
+            } else {
+                self.peer_connect_status.push(remote_status.clone());
             }
         }
 
         // Decompress the input.
         match self.input_decoder.decode(start_frame, bits) {
             Ok(inputs) => {
-                // TODO(james7132): Push event upwards
-                if let PeerState::Running {
-                    mut last_input_packet_recv_time,
-                    ..
-                } = &mut self.state
-                {
-                    last_input_packet_recv_time = UnixMillis::now();
-                }
+                self.push_event(Event::<T::Input>::Inputs(inputs));
+                self.stats.write().last_input_packet_recv_time = UnixMillis::now();
             }
             Err(err) => {
                 error!(
                     "Error while decoding recieved inputs. discarding: {:?}",
                     err
                 );
-                return;
+                return Err(PeerError::InvalidMessage);
             }
         }
 
         // Get rid of our buffered input
         self.input_encoder.acknowledge_frame(ack_frame);
+        Ok(())
     }
 
-    fn on_quality_report(&mut self, data: QualityReport) {
-        self.remote_frame_advantage = data.frame_advantage;
-        self.send(QualityReply { pong: data.ping });
+    async fn on_quality_report(&self, data: QualityReport) -> Result<(), PeerError> {
+        self.stats.write().remote_frame_advantage = data.frame_advantage;
+        self.send(QualityReply { pong: data.ping }).await?;
+        Ok(())
     }
 
-    fn on_quality_reply(&mut self, data: QualityReply) {
-        self.round_trip_time = UnixMillis::now() - data.pong;
-    }
-
-    pub fn set_local_frame_number(&mut self, local_frame: Frame) {
+    pub fn set_local_frame_number(&self, local_frame: Frame) {
+        let mut stats = self.stats.write();
         // Estimate which frame the other guy is one by looking at the
         // last frame they gave us plus some delta for the one-way packet
         // trip time.
         let remote_frame = self.input_decoder.last_decoded_frame()
-            + (self.round_trip_time.as_secs() * TARGET_TPS) as i32;
+            + (stats.round_trip_time.as_secs() * TARGET_TPS) as i32;
 
         // Our frame advantage is how many frames *behind* the other guy
         // we are.  Counter-intuative, I know.  It's an advantage because
         // it means they'll have to predict more often and our moves will
         // pop more frequently.
-        self.local_frame_advantage = remote_frame - local_frame;
+        stats.local_frame_advantage = remote_frame - local_frame;
     }
 
-    pub fn recommend_frame_delay(&mut self) -> Frame {
+    pub fn recommend_frame_delay(&self) -> Frame {
         // XXX: require idle input should be a configuration parameter
         self.timesync.recommend_frame_wait_duration(false)
     }
@@ -682,14 +761,4 @@ struct Stats {
     local_frame_advantage: i32,
     send_queue_len: usize,
     // Udp::Stats          udp;
-}
-
-pub enum Event<T> {
-    Connected,
-    Synchronizing { total: i32, count: i32 },
-    Synchronized,
-    Input { input: FrameInput<T> },
-    Disconnected,
-    NetworkInterrupted { disconnect_timeout: i32 },
-    NetworkResumed,
 }

@@ -21,6 +21,15 @@ pub(super) enum MessageData {
     QualityReply(QualityReply),
 }
 
+impl MessageData {
+    pub fn is_sync_message(&self) -> bool {
+        match self {
+            Self::SyncRequest(_) | Self::SyncReply(_) => true,
+            _ => false,
+        }
+    }
+}
+
 impl From<SyncRequest> for MessageData {
     fn from(value: SyncRequest) -> Self {
         Self::SyncRequest(value)
@@ -62,7 +71,6 @@ pub(super) struct Input {
     pub peer_connect_status: Vec<ConnectionStatus>,
     pub start_frame: Frame,
     pub ack_frame: Frame,
-    pub disconnect_requested: bool,
     pub bits: Vec<u8>,
 }
 

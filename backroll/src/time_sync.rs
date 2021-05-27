@@ -1,7 +1,9 @@
 use super::{input::FrameInput, Frame};
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::convert::TryFrom;
 use std::ops::{Add, Sub};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing::info;
 
@@ -10,42 +12,48 @@ const MIN_UNIQUE_FRAMES: usize = 10;
 const MIN_FRAME_ADVANTAGE: super::Frame = 3;
 const MAX_FRAME_ADVANTAGE: super::Frame = 9;
 
-pub struct TimeSync<T> {
+struct TimeSyncRef<T> {
     local: [Frame; FRAME_WINDOW_SIZE],
     remote: [Frame; FRAME_WINDOW_SIZE],
     last_inputs: [FrameInput<T>; MIN_UNIQUE_FRAMES],
     iteration: u32,
 }
 
+#[derive(Clone)]
+pub struct TimeSync<T>(Arc<Mutex<TimeSyncRef<T>>>);
+
 impl<T: Default> Default for TimeSync<T> {
     fn default() -> Self {
-        Self {
+        Self(Arc::new(Mutex::new(TimeSyncRef {
             local: [0; FRAME_WINDOW_SIZE],
             remote: [0; FRAME_WINDOW_SIZE],
             last_inputs: Default::default(),
             iteration: 0,
-        }
+        })))
     }
 }
 
 impl<T: PartialEq> TimeSync<T> {
-    pub fn advance_frame(&mut self, input: FrameInput<T>, advantage: Frame, radvantage: Frame) {
-        // Remember the last frame and frame advantage
+    pub fn advance_frame(&self, input: FrameInput<T>, advantage: Frame, radvantage: Frame) {
         let frame = usize::try_from(input.frame).unwrap();
-        self.last_inputs[frame % self.last_inputs.len()] = input;
-        self.local[frame % self.local.len()] = advantage;
-        self.remote[frame % self.remote.len()] = radvantage;
+        let mut sync = self.0.lock();
+        // Remember the last frame and frame advantage
+        sync.last_inputs[frame % MIN_UNIQUE_FRAMES] = input;
+        sync.local[frame % FRAME_WINDOW_SIZE] = advantage;
+        sync.remote[frame % FRAME_WINDOW_SIZE] = radvantage;
     }
 
-    pub fn recommend_frame_wait_duration(&mut self, require_idle_input: bool) -> super::Frame {
+    pub fn recommend_frame_wait_duration(&self, require_idle_input: bool) -> super::Frame {
+        let mut sync = self.0.lock();
+
         // Average our local and remote frame advantages
-        let sum = self.local.iter().sum::<Frame>() as f32;
-        let advantage = sum / (self.local.len() as f32);
+        let sum = sync.local.iter().sum::<Frame>() as f32;
+        let advantage = sum / (sync.local.len() as f32);
 
-        let sum = self.remote.iter().sum::<Frame>() as f32;
-        let radvantage = sum / (self.remote.len() as f32);
+        let sum = sync.remote.iter().sum::<Frame>() as f32;
+        let radvantage = sum / (sync.remote.len() as f32);
 
-        self.iteration += 1;
+        sync.iteration += 1;
 
         // See if someone should take action.  The person furthest ahead
         // needs to slow down so the other user can catch up.
@@ -61,7 +69,7 @@ impl<T: PartialEq> TimeSync<T> {
 
         info!(
             "iteration {}:  sleep frames is {}",
-            self.iteration, sleep_frames
+            sync.iteration, sleep_frames
         );
 
         // Some things just aren't worth correcting for.  Make sure
@@ -75,11 +83,11 @@ impl<T: PartialEq> TimeSync<T> {
         // user's input isn't sweeping in arcs (e.g. fireball motions in
         // Street Fighter), which could cause the player to miss moves.
         if require_idle_input {
-            for idx in 0..self.last_inputs.len() {
-                if self.last_inputs[idx] != self.last_inputs[0] {
+            for idx in 0..sync.last_inputs.len() {
+                if sync.last_inputs[idx] != sync.last_inputs[0] {
                     info!(
                         "iteration {}: rejecting due to input stuff at position {}...!!!",
-                        self.iteration, idx
+                        sync.iteration, idx
                     );
                     return 0;
                 }
@@ -91,7 +99,7 @@ impl<T: PartialEq> TimeSync<T> {
     }
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Default, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct UnixMillis(u64);
 
 impl UnixMillis {

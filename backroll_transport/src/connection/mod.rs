@@ -1,3 +1,3 @@
 mod peer;
 
-pub use peer::{Peer, Peers};
+pub use peer::{BidirectionalAsyncChannel, Peer, Peers};

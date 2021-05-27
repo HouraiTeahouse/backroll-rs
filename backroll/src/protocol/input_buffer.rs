@@ -3,7 +3,6 @@ use crate::{input::FrameInput, Frame};
 use parking_lot::RwLock;
 use std::collections::VecDeque;
 use std::sync::Arc;
-use tracing::info;
 
 #[derive(Default)]
 struct InputEncoderRef<T>

@@ -17,14 +17,6 @@ where
     pub player_count: usize,
 }
 
-pub struct DisconnectedError(u64);
-
-impl DisconnectedError {
-    pub fn is_disconnected(&self, player: u64) -> bool {
-        self.0 & (1 << player) != 0
-    }
-}
-
 pub struct SavedFrame<T>
 where
     T: BackrollConfig,

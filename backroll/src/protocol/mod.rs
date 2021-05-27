@@ -1,4 +1,4 @@
-pub use self::event::*;
+pub(crate) use self::event::*;
 use self::input_buffer::*;
 use self::message::*;
 use crate::{
@@ -7,7 +7,7 @@ use crate::{
     BackrollConfig, Frame, NetworkStats, TaskPool,
 };
 use async_channel::TrySendError;
-use backroll_transport::connection::{BidirectionalAsyncChannel, Peer};
+use backroll_transport::connection::Peer;
 use futures::FutureExt;
 use futures_timer::Delay;
 use parking_lot::RwLock;
@@ -47,6 +47,14 @@ const KEEP_ALIVE_INTERVAL: Duration = Duration::from_millis(200);
 const QUALITY_REPORT_INTERVAL: Duration = Duration::from_millis(1000);
 const NETWORK_STATS_INTERVAL: Duration = Duration::from_millis(1000);
 const MAX_SEQ_DISTANCE: Wrapping<u16> = Wrapping(1 << 15);
+
+fn random() -> u32 {
+    let mut rng = rand::thread_rng();
+    loop {
+        let random = rng.next_u32();
+        if random != 0 { return random; }
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 pub enum PeerState {
@@ -129,9 +137,8 @@ impl PeerState {
 
 impl Default for PeerState {
     fn default() -> Self {
-        Self::Syncing {
-            roundtrips_remaining: 0,
-            random: 0,
+        Self::Connecting {
+            random: random(),
         }
     }
 }
@@ -141,7 +148,6 @@ struct PeerStats {
     pub packets_sent: usize,
     pub bytes_sent: usize,
     pub last_send_time: Option<UnixMillis>,
-    pub last_recv_time: Option<UnixMillis>,
     pub last_input_packet_recv_time: UnixMillis,
     pub round_trip_time: Duration,
     pub kbps_sent: u32,
@@ -452,15 +458,7 @@ impl<T: BackrollConfig> BackrollPeer<T> {
     }
 
     async fn serialize_outgoing(self, messages: async_channel::Receiver<MessageData>) {
-        let magic = {
-            let mut rng = rand::thread_rng();
-            let mut magic = rng.next_u32() as u16;
-            while magic == 0 {
-                magic = rng.next_u32() as u16;
-            }
-            magic
-        };
-
+        let magic = random() as u16;
         let mut next_send_seq = Wrapping(0);
         while let Ok(data) = messages.recv().await {
             let message = Message {
@@ -499,8 +497,8 @@ impl<T: BackrollConfig> BackrollPeer<T> {
 
         while let Ok(bytes) = self.config.peer.recv().await {
             // TODO(james7132): Audit rkyv to make sure this is a sound use of unsafe.
-            let mut deserializer = rkyv::de::deserializers::AllocDeserializer;
-            let archive = unsafe { rkyv::util::archived_root::<Message>(&*bytes) };
+            let mut deserializer = AllocDeserializer;
+            let archive = unsafe { archived_root::<Message>(&*bytes) };
             let message = match archive.deserialize(&mut deserializer) {
                 Ok(message) => message,
                 Err(err) => {
@@ -631,14 +629,14 @@ impl<T: BackrollConfig> BackrollPeer<T> {
         }
 
         match *state {
-            PeerState::Connecting { random } => {
+            PeerState::Connecting { .. } => {
                 self.push_event(Event::<T::Input>::Connected)?;
                 state.start_syncing(NUM_SYNC_PACKETS);
                 Ok(())
             }
             PeerState::Syncing {
-                random,
                 ref mut roundtrips_remaining,
+                ..
             } => {
                 info!(
                     "Checking sync state ({} round trips remaining).",

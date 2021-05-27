@@ -9,7 +9,7 @@ bevy = ["bevy_tasks"]
 
 [dependencies]
 backroll_transport = { path = "../backroll_transport" }
-rkyv = "0.6"
+rkyv = { version = "0.6", features = ["validation"] }
 rand = "0.8"
 bytemuck = "1.5"
 thiserror = "1.0"

@@ -14,6 +14,9 @@ mod time_sync;
 pub use backend::*;
 pub use backroll_transport as transport;
 
+// TODO(james7132): Generalize the executor for these.
+pub(crate) use bevy_tasks::TaskPool;
+
 pub const MAX_PLAYERS_PER_MATCH: usize = 8;
 // Approximately 2 seconds of frames.
 const MAX_ROLLBACK_FRAMES: usize = 120;
@@ -34,8 +37,8 @@ pub enum BackrollPlayer {
     Remote(transport::connection::Peer),
 }
 
-pub trait BackrollConfig {
-    type Input: Default + Eq + Clone + bytemuck::Pod;
+pub trait BackrollConfig : 'static {
+    type Input: Default + Eq + Clone + bytemuck::Pod + Send + Sync;
     type State;
 
     const MAX_PLAYERS_PER_MATCH: usize;

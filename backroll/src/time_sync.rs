@@ -111,14 +111,6 @@ impl UnixMillis {
                 .as_millis() as u64,
         )
     }
-
-    pub const fn from_millis(millis: u64) -> Self {
-        Self(millis)
-    }
-
-    pub const fn as_millis(&self) -> u64 {
-        self.0
-    }
 }
 
 impl Add<Duration> for UnixMillis {

@@ -1,11 +1,13 @@
-use self::event::*;
+pub use self::event::*;
 use self::input_buffer::*;
 use self::message::*;
-use super::{
+use crate::{
+    TaskPool,
     input::FrameInput,
     time_sync::{TimeSync, UnixMillis},
     BackrollConfig, Frame, NetworkStats,
 };
+use async_channel::TrySendError;
 use backroll_transport::connection::{BidirectionalAsyncChannel, Peer};
 use futures::FutureExt;
 use futures_timer::Delay;
@@ -30,7 +32,6 @@ pub enum PeerError {
     InvalidMessage,
 }
 
-const MSG_MAX_PLAYERS: usize = 8;
 const UDP_HEADER_SIZE: usize = 28; /* Size of IP + UDP headers */
 const NUM_SYNC_PACKETS: u8 = 5;
 const TARGET_TPS: u64 = 60;
@@ -41,7 +42,6 @@ const RUNNING_RETRY_INTERVAL: Duration = Duration::from_millis(200);
 const KEEP_ALIVE_INTERVAL: Duration = Duration::from_millis(200);
 const QUALITY_REPORT_INTERVAL: Duration = Duration::from_millis(1000);
 const NETWORK_STATS_INTERVAL: Duration = Duration::from_millis(1000);
-const UDP_SHUTDOWN_TIMER: Duration = Duration::from_millis(5000);
 const MAX_SEQ_DISTANCE: Wrapping<u16> = Wrapping(1 << 15);
 
 #[derive(Clone, Copy, Debug)]
@@ -149,11 +149,11 @@ struct PeerStats {
 #[derive(Clone)]
 pub(crate) struct BackrollPeerConfig {
     pub peer: Peer,
-    pub disconnect_timeout: Option<Duration>,
-    pub disconnect_notify_start: Option<Duration>,
+    pub disconnect_timeout: Duration,
+    pub disconnect_notify_start: Duration,
+    pub task_pool: TaskPool,
 }
 
-#[derive(Clone)]
 pub(crate) struct BackrollPeer<T>
 where
     T: BackrollConfig,
@@ -175,6 +175,28 @@ where
     events: async_channel::Sender<Event<T::Input>>,
 }
 
+impl<T: BackrollConfig> Clone for BackrollPeer<T> {
+    fn clone(&self) -> Self {
+        Self {
+            queue: self.queue,
+            config: self.config.clone(),
+            timesync: self.timesync.clone(),
+            state: self.state.clone(),
+
+            stats: self.stats.clone(),
+            local_connect_status:self.local_connect_status.clone(),
+            peer_connect_status: self.peer_connect_status.clone(),
+
+            input_encoder: self.input_encoder.clone(),
+            input_decoder: self.input_decoder.clone(),
+
+            message_in: self.message_in.clone(),
+            message_out: self.message_out.clone(),
+            events: self.events.clone(),
+        }
+    }
+}
+
 impl<T: BackrollConfig> BackrollPeer<T> {
     pub fn new(
         queue: usize,
@@ -182,8 +204,9 @@ impl<T: BackrollConfig> BackrollPeer<T> {
         local_connect_status: Arc<[RwLock<ConnectionStatus>]>,
     ) -> (Self, async_channel::Receiver<Event<T::Input>>) {
         let (deserialize_send, message_in) = async_channel::unbounded::<Message>();
-        let (message_out, serialze_recv) = async_channel::unbounded::<MessageData>();
+        let (message_out, serialize_recv) = async_channel::unbounded::<MessageData>();
         let (events, events_rx) = async_channel::unbounded();
+        let task_pool = config.task_pool.clone();
 
         let peer = Self {
             queue,
@@ -203,19 +226,11 @@ impl<T: BackrollConfig> BackrollPeer<T> {
             events,
         };
 
-        // let serializer = io_pool.spawn(self.clone().serialize_outgoing(
-        //     serialize.reciever().clone(),
-        //     peer.sender().clone()
-        // ));
-        // let network_stats = io_pool.spawn(Self::update_network_stats(
-        //     state.clone(), stats.clone(), NETWORK_STATS_INTERVAL
-        // ));
-
-        // let (msg_tx, msg_rx) = async_channel::unbounded();
-        // let quality_reports = io_pool.spawn(Self::send_quality_reports(QUALITY_REPORT_INTERVAL, msg_tx.clone()));
-        // let network_stats = io_pool.spawn(self.update_network_stats(NETWORK_STATS_INTERVAL));
-        // let flush_packets = io_pool.spawn(self.serialize_outgoing());
-        // let incoming = io_pool.spawn(self.handle_incoming_messages());
+        // Start the base subtasks on the provided executor
+        task_pool.spawn(peer.clone().serialize_outgoing(serialize_recv)).detach();
+        task_pool.spawn(peer.clone().deserialize_incoming(deserialize_send)).detach();
+        task_pool.spawn(peer.clone().update_network_stats(NETWORK_STATS_INTERVAL)).detach();
+        task_pool.spawn(peer.clone().run()).detach();
 
         (peer, events_rx)
     }
@@ -224,26 +239,28 @@ impl<T: BackrollConfig> BackrollPeer<T> {
         self.state.read().is_running()
     }
 
-    pub async fn disconnect(&self) {
+    pub fn disconnect(&self) {
         *self.state.write() = PeerState::Disconnected;
         self.message_in.close();
         self.message_out.close();
         self.events.close();
     }
 
-    async fn push_event(&self, evt: Event<T::Input>) -> Result<(), PeerError> {
+    fn push_event(&self, evt: Event<T::Input>) -> Result<(), PeerError> {
         // Failure to send just means
-        self.events
-            .send(evt)
-            .await
-            .map_err(|_| PeerError::LocalDisconnected)
+        match self.events.try_send(evt) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(_)) => panic!("This channel should never be full, it should be unbounded"),
+            Err(TrySendError::Closed(_)) => Err(PeerError::LocalDisconnected),
+        }
     }
 
-    async fn send(&self, msg: impl Into<MessageData>) -> Result<(), PeerError> {
-        self.message_out
-            .send(msg.into())
-            .await
-            .map_err(|_| PeerError::RemoteDisconnected)
+    fn send(&self, msg: impl Into<MessageData>) -> Result<(), PeerError> {
+        match self.message_out.try_send(msg.into()) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(_)) => panic!("This channel should never be full, it should be unbounded"),
+            Err(TrySendError::Closed(_)) => Err(PeerError::RemoteDisconnected),
+        }
     }
 
     pub fn get_network_stats(&self) -> NetworkStats {
@@ -259,7 +276,7 @@ impl<T: BackrollConfig> BackrollPeer<T> {
         }
     }
 
-    pub async fn send_input(&self, input: FrameInput<T::Input>) -> Result<(), PeerError> {
+    pub fn send_input(&self, input: FrameInput<T::Input>) -> Result<(), PeerError> {
         if self.state.read().is_running() {
             let stats = self.stats.read();
             // Check to see if this is a good time to adjust for the rift...
@@ -277,10 +294,10 @@ impl<T: BackrollConfig> BackrollPeer<T> {
             // the odds of this happening...
             self.input_encoder.push(input);
         }
-        self.send_pending_output().await
+        self.send_pending_output()
     }
 
-    async fn send_pending_output(&self) -> Result<(), PeerError> {
+    fn send_pending_output(&self) -> Result<(), PeerError> {
         let (start_frame, bits) = self.input_encoder.encode();
         self.send(Input {
             peer_connect_status: self
@@ -292,18 +309,16 @@ impl<T: BackrollConfig> BackrollPeer<T> {
             ack_frame: self.input_decoder.last_decoded_frame(),
             bits,
         })
-        .await
     }
 
-    async fn send_input_ack(&self) -> Result<(), PeerError> {
+    pub fn send_input_ack(&self) -> Result<(), PeerError> {
         self.send(InputAck {
             ack_frame: self.input_decoder.last_decoded_frame(),
         })
-        .await
     }
 
     async fn heartbeat(self, interval: Duration) {
-        while let Ok(()) = self.send(MessageData::KeepAlive).await {
+        while let Ok(()) = self.send(MessageData::KeepAlive) {
             debug!("Sent keep alive packet");
             Delay::new(interval).await;
         }
@@ -319,7 +334,7 @@ impl<T: BackrollConfig> BackrollPeer<T> {
                 frame_advantage,
             };
             // Erroring means disconnection.
-            if let Err(err) = self.send(msg).await {
+            if let Err(err) = self.send(msg) {
                 result = Err(err);
                 break;
             }
@@ -340,7 +355,7 @@ impl<T: BackrollConfig> BackrollPeer<T> {
                         self.input_decoder.last_decoded_frame(),
                         self.input_encoder.last_encoded_frame());
                     stats.last_input_packet_recv_time = now;
-                    self.send_pending_output().await?;
+                    self.send_pending_output()?;
                 }
             }
             Delay::new(interval).await;
@@ -348,16 +363,7 @@ impl<T: BackrollConfig> BackrollPeer<T> {
         Ok(())
     }
 
-    // async fn connection_health_check(self) -> Result<(), PeerError> {
-    //     let mut disconnect_notified = false;
-    //     while self.is_running() {
-    //         Delay::new(POLL_INTERVAL).await;
-    //     }
-    //     Ok(())
-    // }
-
     async fn run(mut self) -> Result<(), PeerError> {
-        // let heartbeat = iu_pool.spawn(Self::heartbeat(KEEP_ALIVE_INTERVAL, msg_tx.clone()));
         let mut last_recv_time = UnixMillis::now();
         loop {
             futures::select! {
@@ -367,50 +373,50 @@ impl<T: BackrollConfig> BackrollPeer<T> {
                         Ok(()) => {
                             last_recv_time = UnixMillis::now();
                             if self.state.write().resume() {
-                                self.push_event(Event::<T::Input>::NetworkResumed).await;
+                                self.push_event(Event::<T::Input>::NetworkResumed)?;
                             }
                         },
                         Err(PeerError::InvalidMessage) => {
                             error!("Invalid incoming message");
                         },
                         err => {
-                            self.disconnect().await;
+                            self.disconnect();
                             return err;
                         }
                     }
                 },
                 _ = Delay::new(POLL_INTERVAL).fuse() => {
+                    let timeout = self.config.disconnect_timeout;
+                    let notify_start = self.config.disconnect_notify_start;
                     let now = UnixMillis::now();
-                    if let Some(timeout) = self.config.disconnect_timeout {
-                        if let Some(notify_start) = self.config.disconnect_notify_start {
-                            let mut state = self.state.write();
-                            if !state.is_interrupted() && (last_recv_time + notify_start < now) {
-                                state.interrupt();
-                                info!("Endpoint has stopped receiving packets for {} ms.  Sending notification.",
-                                        notify_start.as_millis());
-                                self.push_event(Event::<T::Input>::NetworkInterrupted {
-                                    disconnect_timeout: timeout - notify_start
-                                }).await?;
-                            }
-                        }
 
-                        if last_recv_time + timeout < now {
-                            info!(
-                                "Endpoint has stopped receiving packets for {} ms. Disconnecting.",
-                                timeout.as_millis()
-                            );
-                            self.disconnect().await;
-                            return Err(PeerError::RemoteDisconnected);
+                    {
+                        let mut state = self.state.write();
+                        if !state.is_interrupted() && (last_recv_time + notify_start < now) {
+                            state.interrupt();
+                            info!("Endpoint has stopped receiving packets for {} ms.  Sending notification.",
+                                  notify_start.as_millis());
+                            self.push_event(Event::<T::Input>::NetworkInterrupted {
+                                disconnect_timeout: timeout - notify_start
+                            })?;
                         }
                     }
 
-                    self.poll().await?;
+                    if last_recv_time + timeout < now {
+                        info!(
+                            "Endpoint has stopped receiving packets for {} ms. Disconnecting.",
+                            timeout.as_millis()
+                        );
+                        self.disconnect();
+                        return Err(PeerError::RemoteDisconnected);
+                    }
+                    self.poll()?;
                 },
             }
         }
     }
 
-    async fn poll(&mut self) -> Result<(), PeerError> {
+    fn poll(&mut self) -> Result<(), PeerError> {
         let state = self.state.write();
         let next_interval = match *state {
             PeerState::Connecting { .. } => SYNC_FIRST_RETRY_INTERVAL,
@@ -424,7 +430,7 @@ impl<T: BackrollConfig> BackrollPeer<T> {
                     "No luck syncing after {:?} ms... Re-queueing sync packet.",
                     next_interval
                 );
-                self.send_sync_request().await?;
+                self.send_sync_request()?;
             }
         }
 
@@ -526,14 +532,14 @@ impl<T: BackrollConfig> BackrollPeer<T> {
     async fn handle_message(&mut self, message: Message) -> Result<(), PeerError> {
         match message.data {
             MessageData::KeepAlive => Ok(()),
-            MessageData::SyncRequest(data) => self.on_sync_request(message.magic, data).await,
-            MessageData::SyncReply(data) => self.on_sync_reply(message.magic, data).await,
-            MessageData::Input(input) => self.on_input(input).await,
+            MessageData::SyncRequest(data) => self.on_sync_request(message.magic, data),
+            MessageData::SyncReply(data) => self.on_sync_reply(message.magic, data),
+            MessageData::Input(input) => self.on_input(input),
             MessageData::InputAck(data) => {
                 self.input_encoder.acknowledge_frame(data.ack_frame);
                 Ok(())
             }
-            MessageData::QualityReport(data) => self.on_quality_report(data).await,
+            MessageData::QualityReport(data) => self.on_quality_report(data),
             MessageData::QualityReply(data) => {
                 self.stats.write().round_trip_time = UnixMillis::now() - data.pong;
                 Ok(())
@@ -541,35 +547,21 @@ impl<T: BackrollConfig> BackrollPeer<T> {
         }
     }
 
-    pub async fn synchronize(&self) -> Result<(), PeerError> {
-        let mut state = self.state.write();
-        let random = rand::thread_rng().next_u32();
-        *state = PeerState::Syncing {
-            roundtrips_remaining: NUM_SYNC_PACKETS,
-            random,
-        };
-        self.send_sync_request().await
-    }
-
-    async fn send_sync_request(&self) -> Result<(), PeerError> {
+    fn send_sync_request(&self) -> Result<(), PeerError> {
         if let PeerState::Syncing { random, .. } = *self.state.read() {
-            self.send(SyncRequest { random }).await
+            self.send(SyncRequest { random })
         } else {
             panic!("Sending sync request while not syncing.")
         }
     }
 
-    async fn update_network_stats(
-        state: Arc<RwLock<PeerState>>,
-        stats: Arc<RwLock<PeerStats>>,
-        interval: Duration,
-    ) {
+    async fn update_network_stats(self, interval: Duration) {
         let mut start_time: Option<UnixMillis> = None;
 
         loop {
             Delay::new(interval).await;
 
-            if !state.read().is_running() {
+            if !self.is_running() {
                 start_time = None;
                 continue;
             }
@@ -579,7 +571,7 @@ impl<T: BackrollConfig> BackrollPeer<T> {
                 start_time = Some(now);
             }
 
-            let mut stats = stats.write();
+            let mut stats = self.stats.write();
             let total_bytes_sent =
                 (stats.bytes_sent + (UDP_HEADER_SIZE * stats.packets_sent)) as f32;
             let seconds = (now - start_time.unwrap()).as_millis() as f32 / 1000.0;
@@ -604,7 +596,7 @@ impl<T: BackrollConfig> BackrollPeer<T> {
         &self.peer_connect_status[id]
     }
 
-    async fn on_sync_request(&mut self, magic: u16, data: SyncRequest) -> Result<(), PeerError> {
+    fn on_sync_request(&mut self, magic: u16, data: SyncRequest) -> Result<(), PeerError> {
         let SyncRequest { random } = data;
         if let PeerState::Running { remote_magic } = *self.state.read() {
             if magic != remote_magic {
@@ -615,11 +607,11 @@ impl<T: BackrollConfig> BackrollPeer<T> {
                 return Err(PeerError::InvalidMessage);
             }
         }
-        self.send(SyncReply { random }).await?;
+        self.send(SyncReply { random })?;
         Ok(())
     }
 
-    async fn on_sync_reply(&self, magic: u16, data: SyncReply) -> Result<(), PeerError> {
+    fn on_sync_reply(&self, magic: u16, data: SyncReply) -> Result<(), PeerError> {
         let mut state = self.state.write();
         if let Some(random) = state.random() {
             if data.random != random {
@@ -630,7 +622,7 @@ impl<T: BackrollConfig> BackrollPeer<T> {
 
         match *state {
             PeerState::Connecting { random } => {
-                self.push_event(Event::<T::Input>::Connected).await?;
+                self.push_event(Event::<T::Input>::Connected)?;
                 state.start_syncing(NUM_SYNC_PACKETS);
                 Ok(())
             }
@@ -646,19 +638,27 @@ impl<T: BackrollConfig> BackrollPeer<T> {
                 *roundtrips_remaining -= 1;
                 if *roundtrips_remaining == 0 {
                     info!("Synchronized queue {}!", self.queue);
-                    self.push_event(Event::<T::Input>::Synchronized).await?;
+                    self.push_event(Event::<T::Input>::Synchronized)?;
                     self.input_decoder.reset();
                     self.stats.write().last_input_packet_recv_time = UnixMillis::now();
                     *state = PeerState::Running {
                         remote_magic: magic,
                     };
+
+                    // FIXME(james7132): If the network is interrupted and a reconnection is completed
+                    // if these tasks do not die before they get reevaluated, there will be multiple 
+                    // alive tasks. This is not the end of the world, but will use extra queue space
+                    // and bandwidth.
+                    let task_pool = self.config.task_pool.clone();
+                    task_pool.spawn(self.clone().heartbeat(KEEP_ALIVE_INTERVAL)).detach();
+                    task_pool.spawn(self.clone().send_quality_reports(QUALITY_REPORT_INTERVAL)).detach();
+                    task_pool.spawn(self.clone().resend_inputs(QUALITY_REPORT_INTERVAL)).detach();
                 } else {
                     self.push_event(Event::<T::Input>::Synchronizing {
                         total: NUM_SYNC_PACKETS,
                         count: NUM_SYNC_PACKETS - *roundtrips_remaining as u8,
-                    })
-                    .await?;
-                    self.send_sync_request().await?;
+                    })?;
+                    self.send_sync_request()?;
                 }
                 Ok(())
             }
@@ -670,7 +670,7 @@ impl<T: BackrollConfig> BackrollPeer<T> {
         }
     }
 
-    async fn on_input(&mut self, msg: Input) -> Result<(), PeerError> {
+    fn on_input(&mut self, msg: Input) -> Result<(), PeerError> {
         let Input {
             peer_connect_status,
             start_frame,
@@ -696,8 +696,10 @@ impl<T: BackrollConfig> BackrollPeer<T> {
         // Decompress the input.
         match self.input_decoder.decode(start_frame, bits) {
             Ok(inputs) => {
-                self.push_event(Event::<T::Input>::Inputs(inputs));
-                self.stats.write().last_input_packet_recv_time = UnixMillis::now();
+                if !inputs.is_empty() {
+                    self.push_event(Event::<T::Input>::Inputs(inputs))?;
+                    self.stats.write().last_input_packet_recv_time = UnixMillis::now();
+                }
             }
             Err(err) => {
                 error!(
@@ -713,9 +715,9 @@ impl<T: BackrollConfig> BackrollPeer<T> {
         Ok(())
     }
 
-    async fn on_quality_report(&self, data: QualityReport) -> Result<(), PeerError> {
+    fn on_quality_report(&self, data: QualityReport) -> Result<(), PeerError> {
         self.stats.write().remote_frame_advantage = data.frame_advantage;
-        self.send(QualityReply { pong: data.ping }).await?;
+        self.send(QualityReply { pong: data.ping })?;
         Ok(())
     }
 
@@ -753,12 +755,4 @@ impl Default for ConnectionStatus {
             last_frame: super::NULL_FRAME,
         }
     }
-}
-
-struct Stats {
-    ping: i32,
-    remote_frame_advantage: i32,
-    local_frame_advantage: i32,
-    send_queue_len: usize,
-    // Udp::Stats          udp;
 }

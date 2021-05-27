@@ -1,12 +1,14 @@
 use super::{BackrollError, BackrollPlayer, BackrollPlayerHandle, BackrollResult};
 use crate::{
     input::{FrameInput, GameInput},
-    is_null,
-    protocol::{BackrollPeer, ConnectionStatus},
+    is_null, TaskPool,
+    protocol::{BackrollPeer, BackrollPeerConfig, ConnectionStatus, Event},
     sync::{self, BackrollSync},
     BackrollConfig, Frame, NetworkStats, SessionCallbacks,
+    transport::connection::Peer,
 };
-use std::sync::{Arc, RwLock};
+use std::sync::Arc; 
+use parking_lot::RwLock;
 use std::time::Duration;
 use tracing::info;
 
@@ -19,16 +21,59 @@ where
     T: BackrollConfig,
 {
     Local,
-    Remote(BackrollPeer<T>),
-    Spectator(BackrollPeer<T>),
+    Remote {
+        peer: BackrollPeer<T>,
+        rx: async_channel::Receiver<Event<T::Input>>
+    },
+    Spectator {
+        peer: BackrollPeer<T>,
+        rx: async_channel::Receiver<Event<T::Input>>
+    },
 }
 
 impl<T: BackrollConfig> Player<T> {
+    pub fn new(
+        queue: usize, 
+        player: &BackrollPlayer, 
+        builder: &P2PSessionBuilder<T>,
+        connect: Arc<[RwLock<ConnectionStatus>]>,
+        task_pool: TaskPool,
+    ) -> Self {
+        match player {
+            BackrollPlayer::Local => Self::Local,
+            BackrollPlayer::Remote(peer) => {
+                let (peer, rx) = Self::make_peer(queue, peer, builder, connect, task_pool);
+                Player::<T>::Remote { peer, rx }
+            },
+            BackrollPlayer::Spectator(peer) => {
+                let (peer, rx) = Self::make_peer(queue, peer, builder, connect, task_pool);
+                Player::<T>::Spectator { peer, rx }
+            },
+        }
+    }
+
+    fn make_peer(
+        queue: usize, 
+        peer: &Peer, 
+        builder: &P2PSessionBuilder<T>,
+        connect: Arc<[RwLock<ConnectionStatus>]>,
+        pool: TaskPool,
+    ) -> (BackrollPeer<T>, async_channel::Receiver<Event::<T::Input>>) {
+        let config = BackrollPeerConfig {
+            peer: peer.clone(),
+            disconnect_timeout: builder.disconnect_timeout,
+            disconnect_notify_start: builder.disconnect_notify_start,
+            task_pool: pool,
+        };
+
+        BackrollPeer::<T>::new(queue, config, connect)
+    }
+
     pub fn peer(&self) -> Option<&BackrollPeer<T>> {
         match self {
             Self::Local => None,
-            Self::Remote(ref peer) => Some(peer),
-            Self::Spectator(ref peer) => Some(peer),
+            Self::Remote { ref peer, .. } => Some(peer),
+            Self::Spectator { ref peer, .. } => Some(peer),
         }
     }
 
@@ -37,7 +82,7 @@ impl<T: BackrollConfig> Player<T> {
     }
 
     pub fn is_remote_player(&self) -> bool {
-        if let Self::Remote(peer) = self {
+        if let Self::Remote { .. } = self {
             true
         } else {
             false
@@ -45,7 +90,7 @@ impl<T: BackrollConfig> Player<T> {
     }
 
     pub fn is_spectator(&self) -> bool {
-        if let Self::Spectator(peer) = self {
+        if let Self::Spectator { .. } = self {
             true
         } else {
             false
@@ -62,7 +107,7 @@ impl<T: BackrollConfig> Player<T> {
 
     pub fn send_input(&mut self, input: FrameInput<T::Input>) {
         if let Some(peer) = self.peer() {
-            peer.send_input(input);
+            let _ = peer.send_input(input);
         }
     }
 
@@ -118,8 +163,8 @@ where
         BackrollPlayerHandle(id)
     }
 
-    pub fn start(self) -> P2PSession<T> {
-        P2PSession::new_internal(self)
+    pub fn start(self, pool: TaskPool) -> P2PSession<T> {
+        P2PSession::new_internal(self, pool)
     }
 }
 
@@ -142,12 +187,18 @@ impl<T: BackrollConfig> P2PSession<T> {
         P2PSessionBuilder::new(callbacks)
     }
 
-    fn new_internal(builder: P2PSessionBuilder<T>) -> Self {
+    fn new_internal(builder: P2PSessionBuilder<T>, task_pool: TaskPool) -> Self {
         let player_count = builder.players.len();
         let connect_status: Vec<RwLock<ConnectionStatus>> =
             (0..player_count).map(|_| Default::default()).collect();
         let connect_status: Arc<[RwLock<ConnectionStatus>]> = connect_status.into();
 
+        let players = 
+            builder.players
+                .iter()
+                .enumerate()
+                .map(|(i, player)| Player::<T>::new(i, player, &builder, connect_status.clone(), task_pool.clone()))
+                .collect();
         let config = sync::Config::<T> {
             callbacks: builder.callbacks,
             player_count,
@@ -155,7 +206,7 @@ impl<T: BackrollConfig> P2PSession<T> {
         let sync = BackrollSync::<T>::new(config, connect_status.clone());
         Self {
             sync,
-            players: Vec::new(),
+            players,
             synchronizing: true,
             next_recommended_sleep: 0,
             next_spectator_frame: 0,
@@ -183,7 +234,7 @@ impl<T: BackrollConfig> P2PSession<T> {
         self.sync.player_count()
     }
 
-    pub fn do_poll(&mut self) {
+    fn do_poll(&mut self) {
         if self.sync.in_rollback() || self.synchronizing {
             return;
         }
@@ -249,7 +300,7 @@ impl<T: BackrollConfig> P2PSession<T> {
                     queue_connected = !peer.get_peer_connect_status(i).disconnected;
                 }
             }
-            let local_status = self.local_connect_status[i].read().unwrap().clone();
+            let local_status = self.local_connect_status[i].read().clone();
             if !local_status.disconnected {
                 min_frame = std::cmp::min(local_status.last_frame, min_frame);
             }
@@ -289,7 +340,7 @@ impl<T: BackrollConfig> P2PSession<T> {
                 }
             }
 
-            let local_status = self.local_connect_status[queue].read().unwrap().clone();
+            let local_status = self.local_connect_status[queue].read().clone();
             // merge in our local status only if we're still connected!
             if !local_status.disconnected {
                 queue_min_confirmed = std::cmp::min(local_status.last_frame, queue_min_confirmed);
@@ -358,13 +409,12 @@ impl<T: BackrollConfig> P2PSession<T> {
         let queue = self.player_handle_to_queue(player)?;
         if self.local_connect_status[queue]
             .read()
-            .unwrap()
             .disconnected
         {
             return Err(BackrollError::PlayerDisconnected(player));
         }
 
-        let last_frame = self.local_connect_status[queue].read().unwrap().last_frame;
+        let last_frame = self.local_connect_status[queue].read().last_frame;
         if self.players[queue].is_local() {
             // The player is local. This should disconnect the local player from the rest
             // of the game. All other players need to be disconnected.
@@ -396,10 +446,10 @@ impl<T: BackrollConfig> P2PSession<T> {
         self.players[queue].disconnect();
 
         info!("Changing queue {} local connect status for last frame from {} to {} on disconnect request (current: {}).",
-         queue, self.local_connect_status[queue].read().unwrap().last_frame, syncto, frame_count);
+         queue, self.local_connect_status[queue].read().last_frame, syncto, frame_count);
 
         {
-            let mut status = self.local_connect_status[queue].write().unwrap();
+            let mut status = self.local_connect_status[queue].write();
             status.disconnected = true;
             status.last_frame = syncto;
         }
@@ -444,7 +494,7 @@ impl<T: BackrollConfig> P2PSession<T> {
             for (i, player) in self.players.iter().enumerate() {
                 if !player.is_local()
                     && !player.is_synchronized()
-                    && !self.local_connect_status[i].read().unwrap().disconnected
+                    && !self.local_connect_status[i].read().disconnected
                 {
                     return;
                 }

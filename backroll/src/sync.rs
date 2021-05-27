@@ -3,7 +3,8 @@ use super::{
     protocol::ConnectionStatus,
     BackrollConfig, BackrollError, BackrollResult, Frame, SessionCallbacks,
 };
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+use parking_lot::RwLock;
 use tracing::{info, warn};
 
 const MAX_PREDICTION_FRAMES: usize = 8;
@@ -15,17 +16,6 @@ where
     pub callbacks: Box<dyn SessionCallbacks<T>>,
     pub player_count: usize,
 }
-
-// struct Event {
-//     enum {
-//         ConfirmedInput,
-//     } type;
-//     union {
-//         struct {
-//         GameInput   input;
-//         } confirmedInput;
-//     } u;
-// };
 
 pub struct DisconnectedError(u64);
 
@@ -292,7 +282,7 @@ impl<T: BackrollConfig> BackrollSync<T> {
     }
 
     fn is_disconnected(&self, player: usize) -> bool {
-        let status = self.local_connect_status[player].read().unwrap();
+        let status = self.local_connect_status[player].read();
         status.disconnected && status.last_frame < self.frame_count()
     }
 

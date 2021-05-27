@@ -1,6 +1,6 @@
 use super::{input::FrameInput, Frame};
 use parking_lot::Mutex;
-use serde::{Deserialize, Serialize};
+use rkyv::{Archive, Deserialize, Serialize};
 use std::convert::TryFrom;
 use std::ops::{Add, Sub};
 use std::sync::Arc;
@@ -99,7 +99,9 @@ impl<T: PartialEq> TimeSync<T> {
     }
 }
 
-#[derive(Debug, Default, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Archive, Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord,
+)]
 pub struct UnixMillis(u64);
 
 impl UnixMillis {

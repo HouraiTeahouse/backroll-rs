@@ -3,8 +3,8 @@ use super::{
     protocol::ConnectionStatus,
     BackrollConfig, BackrollError, BackrollResult, Frame, SessionCallbacks,
 };
-use std::sync::Arc;
 use parking_lot::RwLock;
+use std::sync::Arc;
 use tracing::{info, warn};
 
 const MAX_PREDICTION_FRAMES: usize = 8;

@@ -2,10 +2,9 @@ pub use self::event::*;
 use self::input_buffer::*;
 use self::message::*;
 use crate::{
-    TaskPool,
     input::FrameInput,
     time_sync::{TimeSync, UnixMillis},
-    BackrollConfig, Frame, NetworkStats,
+    BackrollConfig, Frame, NetworkStats, TaskPool,
 };
 use async_channel::TrySendError;
 use backroll_transport::connection::{BidirectionalAsyncChannel, Peer};
@@ -184,7 +183,7 @@ impl<T: BackrollConfig> Clone for BackrollPeer<T> {
             state: self.state.clone(),
 
             stats: self.stats.clone(),
-            local_connect_status:self.local_connect_status.clone(),
+            local_connect_status: self.local_connect_status.clone(),
             peer_connect_status: self.peer_connect_status.clone(),
 
             input_encoder: self.input_encoder.clone(),
@@ -227,9 +226,15 @@ impl<T: BackrollConfig> BackrollPeer<T> {
         };
 
         // Start the base subtasks on the provided executor
-        task_pool.spawn(peer.clone().serialize_outgoing(serialize_recv)).detach();
-        task_pool.spawn(peer.clone().deserialize_incoming(deserialize_send)).detach();
-        task_pool.spawn(peer.clone().update_network_stats(NETWORK_STATS_INTERVAL)).detach();
+        task_pool
+            .spawn(peer.clone().serialize_outgoing(serialize_recv))
+            .detach();
+        task_pool
+            .spawn(peer.clone().deserialize_incoming(deserialize_send))
+            .detach();
+        task_pool
+            .spawn(peer.clone().update_network_stats(NETWORK_STATS_INTERVAL))
+            .detach();
         task_pool.spawn(peer.clone().run()).detach();
 
         (peer, events_rx)
@@ -250,7 +255,9 @@ impl<T: BackrollConfig> BackrollPeer<T> {
         // Failure to send just means
         match self.events.try_send(evt) {
             Ok(()) => Ok(()),
-            Err(TrySendError::Full(_)) => panic!("This channel should never be full, it should be unbounded"),
+            Err(TrySendError::Full(_)) => {
+                panic!("This channel should never be full, it should be unbounded")
+            }
             Err(TrySendError::Closed(_)) => Err(PeerError::LocalDisconnected),
         }
     }
@@ -258,7 +265,9 @@ impl<T: BackrollConfig> BackrollPeer<T> {
     fn send(&self, msg: impl Into<MessageData>) -> Result<(), PeerError> {
         match self.message_out.try_send(msg.into()) {
             Ok(()) => Ok(()),
-            Err(TrySendError::Full(_)) => panic!("This channel should never be full, it should be unbounded"),
+            Err(TrySendError::Full(_)) => {
+                panic!("This channel should never be full, it should be unbounded")
+            }
             Err(TrySendError::Closed(_)) => Err(PeerError::RemoteDisconnected),
         }
     }
@@ -458,9 +467,8 @@ impl<T: BackrollConfig> BackrollPeer<T> {
 
             let mut bytes = Vec::new();
             {
-                let compressor = lz4_flex::frame::FrameEncoder::new(&mut bytes);
                 let mut bincode =
-                    bincode::Serializer::new(compressor, bincode::config::DefaultOptions::new());
+                    bincode::Serializer::new(&mut bytes, bincode::config::DefaultOptions::new());
                 message
                     .serialize(&mut bincode)
                     .expect("Should not be producing unserializable inputs.");
@@ -486,9 +494,8 @@ impl<T: BackrollConfig> BackrollPeer<T> {
         let mut next_recv_seq = Wrapping(0);
 
         while let Ok(bytes) = self.config.peer.recv().await {
-            let decompressor = lz4_flex::frame::FrameDecoder::new(&*bytes);
             let mut bincode = bincode::de::Deserializer::with_reader(
-                decompressor,
+                &*bytes,
                 bincode::config::DefaultOptions::new(),
             );
             let message = match Message::deserialize(&mut bincode) {
@@ -646,13 +653,19 @@ impl<T: BackrollConfig> BackrollPeer<T> {
                     };
 
                     // FIXME(james7132): If the network is interrupted and a reconnection is completed
-                    // if these tasks do not die before they get reevaluated, there will be multiple 
+                    // if these tasks do not die before they get reevaluated, there will be multiple
                     // alive tasks. This is not the end of the world, but will use extra queue space
                     // and bandwidth.
                     let task_pool = self.config.task_pool.clone();
-                    task_pool.spawn(self.clone().heartbeat(KEEP_ALIVE_INTERVAL)).detach();
-                    task_pool.spawn(self.clone().send_quality_reports(QUALITY_REPORT_INTERVAL)).detach();
-                    task_pool.spawn(self.clone().resend_inputs(QUALITY_REPORT_INTERVAL)).detach();
+                    task_pool
+                        .spawn(self.clone().heartbeat(KEEP_ALIVE_INTERVAL))
+                        .detach();
+                    task_pool
+                        .spawn(self.clone().send_quality_reports(QUALITY_REPORT_INTERVAL))
+                        .detach();
+                    task_pool
+                        .spawn(self.clone().resend_inputs(QUALITY_REPORT_INTERVAL))
+                        .detach();
                 } else {
                     self.push_event(Event::<T::Input>::Synchronizing {
                         total: NUM_SYNC_PACKETS,

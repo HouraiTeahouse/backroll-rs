@@ -37,7 +37,7 @@ pub enum BackrollPlayer {
     Remote(transport::connection::Peer),
 }
 
-pub trait BackrollConfig : 'static {
+pub trait BackrollConfig: 'static {
     type Input: Default + Eq + Clone + bytemuck::Pod + Send + Sync;
     type State;
 

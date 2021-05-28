@@ -1,6 +1,7 @@
 use async_channel::{TryRecvError, TrySendError};
 use core::hash::Hash;
-use std::{collections::HashMap, ops::Deref};
+use dashmap::DashMap;
+use std::ops::Deref;
 
 #[derive(Clone)]
 pub struct BidirectionalAsyncChannel<T> {
@@ -142,43 +143,92 @@ impl Deref for Peer {
     }
 }
 
-#[derive(Default)]
-pub struct Peers<T>(HashMap<T, Peer>)
+/// A keyed mapping of `[Peer]`s with ownership semantics.
+///
+/// Dropping will disconnect all owned peers.
+pub struct Peers<T>(DashMap<T, Peer>)
 where
     T: Eq + Hash;
 
 impl<T: Eq + Hash> Peers<T> {
-    /// Gets a Peer by it's ID, if available.
+    /// Gets a `[Peer]` by it's ID, if available.
     pub fn get(&self, id: &T) -> Option<Peer> {
-        self.0.get(&id).cloned()
+        self.0.get(&id).and_then(|kv| {
+            let peer = kv.value().clone();
+            if peer.is_connected() {
+                Some(peer)
+            } else {
+                None
+            }
+        })
     }
 
     /// Checks if the store has a connection to the given ID.
     pub fn contains(&self, id: &T) -> bool {
-        self.0.contains_key(&id)
+        self.0
+            .get(&id)
+            .map(|kv| kv.value().is_connected())
+            .unwrap_or(false)
     }
 
-    /// Creates an unbounded peer pair and stores one end, mapping it to the
+    /// Creates a new unbounded peer pair and stores one end, mapping it to
+    /// the provided ID, returning the other end.
+    ///
+    /// If a peer was previous stored at the given ID, it will be replaced and
+    /// disconnected.
+    #[must_use]
+    pub fn create_unbounded(&self, id: T) -> Peer {
+        let (a, b) = Peer::create_unbounded_pair();
+        if let Some(prior) = self.0.insert(id, a) {
+            prior.disconnect();
+        }
+        b
+    }
+
+    /// Creates an bounded peer pair and stores one end, mapping it to the
     /// provided ID, returning the other end.
     ///
     /// If a peer was previous stored at the given ID, it will be dropped and
     /// replaced.
     #[must_use]
-    pub fn create_unbounded(&mut self, id: T) -> Peer {
-        let (a, b) = Peer::create_unbounded_pair();
+    pub fn create_bounded(&self, id: T, capacity: usize) -> Peer {
+        let (a, b) = Peer::create_bounded_pair(capacity);
         self.0.insert(id, a);
         b
     }
 
-    /// Removes a connection by it's ID.
+    /// Disconnects and removes a connection by it's ID
     ///
     /// A no-op if there no Peer with the given ID.
-    pub fn disconnect(&mut self, id: T) {
-        self.0.remove(&id);
+    pub fn disconnect(&self, id: &T) {
+        if let Some((_, peer)) = self.0.remove(&id) {
+            peer.disconnect();
+        }
     }
 
     /// Removes all peers that are disconnected.
-    pub fn flush_disconnected(&mut self) {
-        self.0.retain(|_, v| v.is_connected())
+    pub fn flush_disconnected(&self) {
+        self.0.retain(|_, peer| {
+            if peer.is_connected() {
+                peer.disconnect();
+                true
+            } else {
+                false
+            }
+        })
+    }
+}
+
+impl<T: Eq + Hash> Default for Peers<T> {
+    fn default() -> Self {
+        Self(DashMap::<T, Peer>::new())
+    }
+}
+
+impl<T: Eq + Hash> Drop for Peers<T> {
+    fn drop(&mut self) {
+        for kv in self.0.iter() {
+            kv.value().disconnect();
+        }
     }
 }

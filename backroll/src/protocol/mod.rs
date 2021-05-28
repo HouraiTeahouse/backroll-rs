@@ -8,6 +8,7 @@ use crate::{
 };
 use async_channel::TrySendError;
 use backroll_transport::connection::Peer;
+use bincode::config::Options;
 use futures::FutureExt;
 use futures_timer::Delay;
 use parking_lot::RwLock;
@@ -31,7 +32,8 @@ pub enum PeerError {
     InvalidMessage,
 }
 
-const UDP_HEADER_SIZE: usize = 28; /* Size of IP + UDP headers */
+const UDP_HEADER_SIZE: usize = 28; // Size of IP + UDP headers
+const MAX_TRANSMISSION_UNIT: u64 = 1450; // A sane common packet size.
 const NUM_SYNC_PACKETS: u8 = 5;
 const TARGET_TPS: u64 = 60;
 const POLL_INTERVAL: Duration = Duration::from_millis(1000 / TARGET_TPS);
@@ -465,11 +467,17 @@ impl<T: BackrollConfig> BackrollPeer<T> {
 
             let mut bytes = Vec::new();
             {
-                let mut bincode =
-                    bincode::Serializer::new(&mut bytes, bincode::config::DefaultOptions::new());
-                message
-                    .serialize(&mut bincode)
-                    .expect("Should not be producing unserializable inputs.");
+                let mut bincode = bincode::Serializer::new(
+                    &mut bytes,
+                    bincode::options().with_limit(MAX_TRANSMISSION_UNIT),
+                );
+                if let Err(err) = message.serialize(&mut bincode) {
+                    error!(
+                        "Dropping outgoing packet. Error while serializing outgoing message: {:?}",
+                        err
+                    );
+                    continue;
+                }
             }
 
             let msg_size = bytes.len();
@@ -494,12 +502,12 @@ impl<T: BackrollConfig> BackrollPeer<T> {
         while let Ok(bytes) = self.config.peer.recv().await {
             let mut bincode = bincode::de::Deserializer::with_reader(
                 &*bytes,
-                bincode::config::DefaultOptions::new(),
+                bincode::options().with_limit(MAX_TRANSMISSION_UNIT),
             );
             let message = match Message::deserialize(&mut bincode) {
                 Ok(message) => message,
                 Err(err) => {
-                    error!("Error while deserialilzing incoming message: {:?}", err);
+                    error!("Dropping incoming message. Error while deserialilzing incoming message: {:?}", err);
                     continue;
                 }
             };

@@ -58,17 +58,17 @@ impl<T: Default + bytemuck::Pod + Clone> InputEncoder<T> {
     /// This will not remove any of the inputs in the queue, but will update
     /// the value returned by `[last_encoded_frame]` to reflect the highest
     /// frame that has been encoded.
-    pub fn encode(&self) -> (Frame, Vec<u8>) {
+    pub fn encode(&self) -> Result<(Frame, Vec<u8>), compression::EncodeError> {
         let mut queue = self.0.write();
         let pending = &queue.pending;
         if !pending.is_empty() {
             let start_frame = pending.back().unwrap().frame;
-            let bits =
-                compression::encode(&queue.last_acked.input, pending.iter().map(|f| &f.input));
+            let inputs = pending.iter().map(|f| &f.input);
+            let bits = compression::encode(&queue.last_acked.input, inputs)?;
             queue.last_encoded = queue.pending.front().unwrap().clone();
-            (start_frame, bits)
+            Ok((start_frame, bits))
         } else {
-            (0, Vec::new())
+            Ok((0, Vec::new()))
         }
     }
 }

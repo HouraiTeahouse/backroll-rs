@@ -315,7 +315,11 @@ impl<T: BackrollConfig> BackrollPeer<T> {
     }
 
     fn send_pending_output(&self) -> Result<(), PeerError> {
-        let (start_frame, bits) = self.input_encoder.encode();
+        let (start_frame, bits) = self.input_encoder.encode().expect(
+            "The Backroll client has somehow sent created an input \
+             queue of 65,535 bytes or more. This is ill advised. \
+             Consider further compressing your inputs.",
+        );
         self.send(Input {
             peer_connect_status: self
                 .local_connect_status

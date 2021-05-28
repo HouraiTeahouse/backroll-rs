@@ -1,12 +1,25 @@
 use bytemuck::Pod;
 use thiserror::Error;
 
-pub fn encode<'a, T: Pod>(base: &'a T, data: impl Iterator<Item = &'a T>) -> Vec<u8> {
+/// The maximum supported size of the raw buffer.
+const MAX_BUFFER_SIZE: usize = u16::MAX as usize;
+
+/// Encodes a set of `[Pod]` values into a byte buffer relative to a reference snapshot.
+///
+/// # Security
+/// This function fails if the delta encoded output is bigger than `[MAX_BUFFER_SIZE]` to prevent
+/// memory exhaustion.
+///
+/// [Pod](bytemuck::Pod)
+pub fn encode<'a, T: Pod>(
+    base: &'a T,
+    data: impl Iterator<Item = &'a T>,
+) -> Result<Vec<u8>, EncodeError> {
     let mut base = base.clone();
     let bits = bytemuck::bytes_of_mut(&mut base);
     let (lower, upper) = data.size_hint();
-    let capacity = upper.unwrap_or(lower);
-    let mut bytes = Vec::with_capacity(bits.len() * capacity);
+    let capacity = std::cmp::min(MAX_BUFFER_SIZE, upper.unwrap_or(lower) * bits.len());
+    let mut bytes = Vec::with_capacity(capacity);
 
     // Create buffer of delta encoded bytes via XOR.
     for datum in data {
@@ -16,17 +29,37 @@ pub fn encode<'a, T: Pod>(base: &'a T, data: impl Iterator<Item = &'a T>) -> Vec
             bytes.push(*b1 ^ *b2);
             *b1 = *b2;
         }
+
+        if bytes.len() >= MAX_BUFFER_SIZE {
+            return Err(EncodeError::TooBig { len: bytes.len() });
+        }
     }
 
     // Bitfield RLE the result
-    bitfield::encode(bytes)
+    Ok(bitfield::encode(bytes))
 }
 
+/// Decodes a set of delta encoded bytes into a buffer of `[Pod]` values relative to a
+/// reference snapshot.
+///
+/// # Security
+/// This function fails if the delta encoded output is bigger than `[MAX_BUFFER_SIZE]` to prevent
+/// memory exhaustion. Also fails if the provided bytes cannot be safely converted via
+/// `[bytemuck::bytes_of]`.
+///
+/// [Pod](bytemuck::Pod)
 pub fn decode<T: Pod + Clone>(base: &T, data: impl AsRef<[u8]>) -> Result<Vec<T>, DecodeError> {
     let mut base = base.clone();
     let bits = bytemuck::bytes_of_mut(&mut base);
     let stride = bits.len();
     debug_assert!(stride > 0);
+    let delta_len = bitfield::decode_len_with_offset(data.as_ref(), 0)?;
+
+    // Ensure that the size of the buffer is not too big.
+    if delta_len > MAX_BUFFER_SIZE {
+        return Err(DecodeError::TooBig { len: delta_len });
+    }
+
     let delta = bitfield::decode(data)?;
     debug_assert!(delta.len() % stride == 0);
     let output_size = delta.len() / stride;
@@ -43,11 +76,19 @@ pub fn decode<T: Pod + Clone>(base: &T, data: impl AsRef<[u8]>) -> Result<Vec<T>
 }
 
 #[derive(Error, Debug)]
+pub enum EncodeError {
+    #[error("Input buffer is too big: {}", .len)]
+    TooBig { len: usize },
+}
+
+#[derive(Error, Debug)]
 pub enum DecodeError {
     #[error("Cannot be cast {:?}", .0)]
     Cast(bytemuck::PodCastError),
     #[error("RLE decode error: offset: {}, len: {}", .offset, .len)]
     InvalidRLEBitfield { offset: usize, len: usize },
+    #[error("Output buffer is too big: {}", .len)]
+    TooBig { len: usize },
 }
 
 impl From<bytemuck::PodCastError> for DecodeError {

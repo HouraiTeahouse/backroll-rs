@@ -21,8 +21,6 @@ future.
    the sizes of many data types.
  * Vectorized input compression scheme - Backroll utilizes the same XOR + RLE
    encoding, but it's written to maximize CPU utilization.
- * Uses [rkyv](https://github.com/djkoloski/rkyv) as a message serialization
-   scheme.
  * Multithreaded I/O - All network communications run within an async task pool.
    I/O polling is no longer manual, nor blocks your game's execution.
 

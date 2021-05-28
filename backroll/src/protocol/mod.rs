@@ -12,12 +12,7 @@ use futures::FutureExt;
 use futures_timer::Delay;
 use parking_lot::RwLock;
 use rand::RngCore;
-use rkyv::{
-    archived_root,
-    de::deserializers::AllocDeserializer,
-    ser::{serializers::AlignedSerializer, Serializer},
-    AlignedVec, Archive, Deserialize, Serialize,
-};
+use serde::{Deserialize, Serialize};
 use std::num::Wrapping;
 use std::sync::Arc;
 use std::time::Duration;
@@ -52,7 +47,9 @@ fn random() -> u32 {
     let mut rng = rand::thread_rng();
     loop {
         let random = rng.next_u32();
-        if random != 0 { return random; }
+        if random != 0 {
+            return random;
+        }
     }
 }
 
@@ -137,9 +134,7 @@ impl PeerState {
 
 impl Default for PeerState {
     fn default() -> Self {
-        Self::Connecting {
-            random: random(),
-        }
+        Self::Connecting { random: random() }
     }
 }
 
@@ -463,18 +458,19 @@ impl<T: BackrollConfig> BackrollPeer<T> {
         while let Ok(data) = messages.recv().await {
             let message = Message {
                 magic,
-                sequence_number: next_send_seq.0,
+                sequence_number: next_send_seq,
                 data,
             };
             next_send_seq += Wrapping(1);
 
-            let bytes = {
-                let mut serializer = AlignedSerializer::new(AlignedVec::new());
-                serializer
-                    .serialize_value(&message)
+            let mut bytes = Vec::new();
+            {
+                let mut bincode =
+                    bincode::Serializer::new(&mut bytes, bincode::config::DefaultOptions::new());
+                message
+                    .serialize(&mut bincode)
                     .expect("Should not be producing unserializable inputs.");
-                serializer.into_inner().into_boxed_slice()
-            };
+            }
 
             let msg_size = bytes.len();
             if let Ok(()) = self.config.peer.send(bytes.into()).await {
@@ -496,10 +492,11 @@ impl<T: BackrollConfig> BackrollPeer<T> {
         let mut next_recv_seq = Wrapping(0);
 
         while let Ok(bytes) = self.config.peer.recv().await {
-            // TODO(james7132): Audit rkyv to make sure this is a sound use of unsafe.
-            let mut deserializer = AllocDeserializer;
-            let archive = unsafe { archived_root::<Message>(&*bytes) };
-            let message = match archive.deserialize(&mut deserializer) {
+            let mut bincode = bincode::de::Deserializer::with_reader(
+                &*bytes,
+                bincode::config::DefaultOptions::new(),
+            );
+            let message = match Message::deserialize(&mut bincode) {
                 Ok(message) => message,
                 Err(err) => {
                     error!("Error while deserialilzing incoming message: {:?}", err);
@@ -507,7 +504,7 @@ impl<T: BackrollConfig> BackrollPeer<T> {
                 }
             };
 
-            let seq = Wrapping(message.sequence_number);
+            let seq = message.sequence_number;
             if message.data.is_sync_message() {
                 if let PeerState::Running { remote_magic } = *self.state.read() {
                     if message.magic != remote_magic {
@@ -526,7 +523,7 @@ impl<T: BackrollConfig> BackrollPeer<T> {
                 }
             }
 
-            next_recv_seq = seq;
+            next_recv_seq = message.sequence_number;
             messages
                 .send(message)
                 .await
@@ -756,7 +753,7 @@ impl<T: BackrollConfig> BackrollPeer<T> {
     }
 }
 
-#[derive(Clone, Debug, Archive, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ConnectionStatus {
     pub disconnected: bool,
     pub last_frame: Frame,

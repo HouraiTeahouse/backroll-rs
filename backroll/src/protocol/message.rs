@@ -1,15 +1,16 @@
 use super::ConnectionStatus;
 use crate::{time_sync::UnixMillis, Frame};
-use rkyv::{Archive, Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
+use std::num::Wrapping;
 
-#[derive(Clone, Debug, Archive, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(super) struct Message {
     pub magic: u16,
-    pub sequence_number: u16,
+    pub sequence_number: Wrapping<u16>,
     pub data: MessageData,
 }
 
-#[derive(Clone, Debug, Archive, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(super) enum MessageData {
     KeepAlive,
     SyncRequest(SyncRequest),
@@ -65,7 +66,7 @@ impl From<QualityReply> for MessageData {
     }
 }
 
-#[derive(Clone, Debug, Archive, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(super) struct Input {
     pub peer_connect_status: Vec<ConnectionStatus>,
     pub start_frame: Frame,
@@ -73,28 +74,28 @@ pub(super) struct Input {
     pub bits: Vec<u8>,
 }
 
-#[derive(Clone, Debug, Archive, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(super) struct InputAck {
     pub ack_frame: Frame,
 }
 
-#[derive(Clone, Debug, Archive, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(super) struct SyncRequest {
     pub random: u32,
 }
 
-#[derive(Clone, Debug, Archive, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(super) struct SyncReply {
     pub random: u32,
 }
 
-#[derive(Clone, Debug, Archive, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(super) struct QualityReport {
     pub frame_advantage: i32,
     pub ping: UnixMillis,
 }
 
-#[derive(Clone, Debug, Archive, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(super) struct QualityReply {
     pub pong: UnixMillis,
 }

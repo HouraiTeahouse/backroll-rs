@@ -13,7 +13,7 @@ default = ["bevy"]
 bevy = ["bevy_tasks"]
 
 [dependencies]
-backroll_transport = { path = "../backroll_transport" }
+backroll_transport = {  path = "../backroll_transport", version = "0.1" }
 bincode = "1.3"
 rand = "0.8"
 bytemuck = "1.5"

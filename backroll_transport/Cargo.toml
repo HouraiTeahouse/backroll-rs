@@ -1,9 +1,10 @@
 [package]
 name = "backroll_transport"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2018"
 authors = ["Hourai Teahouse Developers <contact@houraiteahouse.net>"]
 description = "An async transport abstraction layer."
+repository = "https://github.com/HouraiTeahouse/backroll-rs"
 license = "ISC"
 
 [dependencies]

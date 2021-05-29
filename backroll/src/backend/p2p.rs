@@ -183,7 +183,7 @@ where
     }
 }
 
-pub struct P2PSession<T>
+struct P2PSessionRef<T>
 where
     T: BackrollConfig,
 {
@@ -197,53 +197,7 @@ where
     local_connect_status: Arc<[RwLock<ConnectionStatus>]>,
 }
 
-impl<T: BackrollConfig> P2PSession<T> {
-    pub fn build() -> P2PSessionBuilder<T> {
-        P2PSessionBuilder::new()
-    }
-
-    fn new_internal(builder: P2PSessionBuilder<T>, task_pool: TaskPool) -> BackrollResult<Self> {
-        let local_player_count = builder
-            .players
-            .iter()
-            .filter(|player| player.is_local())
-            .count();
-        if local_player_count > 1 {
-            return Err(BackrollError::MultipleLocalPlayers);
-        }
-        let player_count = builder.players.len();
-        let connect_status: Vec<RwLock<ConnectionStatus>> =
-            (0..player_count).map(|_| Default::default()).collect();
-        let connect_status: Arc<[RwLock<ConnectionStatus>]> = connect_status.into();
-
-        let players: Vec<Player<T>> = builder
-            .players
-            .iter()
-            .enumerate()
-            .map(|(i, player)| {
-                Player::<T>::new(
-                    i,
-                    player,
-                    &builder,
-                    connect_status.clone(),
-                    task_pool.clone(),
-                )
-            })
-            .collect();
-
-        let synchronizing = players.iter().any(|player| !player.is_local());
-        let config = sync::Config { player_count };
-        let sync = BackrollSync::<T>::new(config, connect_status.clone());
-        Ok(Self {
-            sync,
-            players,
-            synchronizing,
-            next_recommended_sleep: 0,
-            next_spectator_frame: 0,
-            local_connect_status: connect_status,
-        })
-    }
-
+impl<T: BackrollConfig> P2PSessionRef<T> {
     fn players(&self) -> impl Iterator<Item = &BackrollPeer<T>> {
         self.players
             .iter()
@@ -260,52 +214,52 @@ impl<T: BackrollConfig> P2PSession<T> {
             .flatten()
     }
 
-    /// Gets the number of players in the current session. This includes
-    /// users that are already disconnected.
-    pub fn player_count(&self) -> usize {
-        self.sync.player_count()
-    }
-
-    /// Checks if the session currently in the middle of a rollback.
-    pub fn in_rollback(&self) -> bool {
-        self.sync.in_rollback()
-    }
-
-    /// Gets the current frame of the game.
-    pub fn current_frame(&self) -> Frame {
-        self.sync.frame_count()
-    }
-
-    pub fn local_players(&self) -> impl Iterator<Item = BackrollPlayerHandle> + '_ {
-        self.players
-            .iter()
-            .enumerate()
-            .filter(|(_, player)| player.is_local())
-            .map(|(i, _)| BackrollPlayerHandle(i))
-    }
-
-    pub fn remote_players(&self) -> impl Iterator<Item = BackrollPlayerHandle> + '_ {
-        self.players
-            .iter()
-            .enumerate()
-            .filter(|(_, player)| player.is_remote_player())
-            .map(|(i, _)| BackrollPlayerHandle(i))
-    }
-
-    /// Checks if all remote players are synchronized. If all players are
-    /// local, this will always return true.
-    pub fn is_synchronized(&self) -> bool {
-        // Check to see if everyone is now synchronized.  If so,
-        // go ahead and tell the client that we're ok to accept input.
-        for (i, player) in self.players.iter().enumerate() {
-            if !player.is_local()
-                && !player.is_synchronized()
-                && !self.local_connect_status[i].read().disconnected
-            {
-                return false;
-            }
+    fn player_handle_to_queue(&self, player: BackrollPlayerHandle) -> BackrollResult<usize> {
+        let offset = player.0;
+        if offset >= self.sync.player_count() {
+            return Err(BackrollError::InvalidPlayer(player));
         }
-        true
+        Ok(offset)
+    }
+
+    fn check_initial_sync(&mut self, callbacks: &mut impl SessionCallbacks<T>) {
+        if self.synchronizing && self.is_synchronized() {
+            callbacks.handle_event(BackrollEvent::Running);
+            self.synchronizing = false;
+        }
+    }
+
+    fn disconnect_player_queue(
+        &mut self,
+        callbacks: &mut impl SessionCallbacks<T>,
+        queue: usize,
+        syncto: Frame,
+    ) {
+        let frame_count = self.sync.frame_count();
+
+        self.players[queue].disconnect();
+
+        info!("Changing queue {} local connect status for last frame from {} to {} on disconnect request (current: {}).",
+         queue, self.local_connect_status[queue].read().last_frame, syncto, frame_count);
+
+        {
+            let mut status = self.local_connect_status[queue].write();
+            status.disconnected = true;
+            status.last_frame = syncto;
+        }
+
+        if syncto < frame_count {
+            info!(
+                "Adjusting simulation to account for the fact that {} disconnected @ {}.",
+                queue, syncto
+            );
+            self.sync.adjust_simulation(callbacks, syncto);
+            info!("Finished adjusting simulation.");
+        }
+
+        callbacks.handle_event(BackrollEvent::Disconnected(BackrollPlayerHandle(queue)));
+
+        self.check_initial_sync(callbacks);
     }
 
     fn do_poll(&mut self, callbacks: &mut impl SessionCallbacks<T>) {
@@ -439,6 +393,122 @@ impl<T: BackrollConfig> P2PSession<T> {
         return min_frame;
     }
 
+    fn is_synchronized(&self) -> bool {
+        // Check to see if everyone is now synchronized.  If so,
+        // go ahead and tell the client that we're ok to accept input.
+        for (i, player) in self.players.iter().enumerate() {
+            if !player.is_local()
+                && !player.is_synchronized()
+                && !self.local_connect_status[i].read().disconnected
+            {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+pub struct P2PSession<T>(Arc<RwLock<P2PSessionRef<T>>>)
+where
+    T: BackrollConfig;
+
+impl<T: BackrollConfig> Clone for P2PSession<T> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl<T: BackrollConfig> P2PSession<T> {
+    pub fn build() -> P2PSessionBuilder<T> {
+        P2PSessionBuilder::new()
+    }
+
+    fn new_internal(builder: P2PSessionBuilder<T>, task_pool: TaskPool) -> BackrollResult<Self> {
+        let local_player_count = builder
+            .players
+            .iter()
+            .filter(|player| player.is_local())
+            .count();
+        if local_player_count > 1 {
+            return Err(BackrollError::MultipleLocalPlayers);
+        }
+        let player_count = builder.players.len();
+        let connect_status: Vec<RwLock<ConnectionStatus>> =
+            (0..player_count).map(|_| Default::default()).collect();
+        let connect_status: Arc<[RwLock<ConnectionStatus>]> = connect_status.into();
+
+        let players: Vec<Player<T>> = builder
+            .players
+            .iter()
+            .enumerate()
+            .map(|(i, player)| {
+                Player::<T>::new(
+                    i,
+                    player,
+                    &builder,
+                    connect_status.clone(),
+                    task_pool.clone(),
+                )
+            })
+            .collect();
+
+        let synchronizing = players.iter().any(|player| !player.is_local());
+        let config = sync::Config { player_count };
+        let sync = BackrollSync::<T>::new(config, connect_status.clone());
+        Ok(Self(Arc::new(RwLock::new(P2PSessionRef::<T> {
+            sync,
+            players,
+            synchronizing,
+            next_recommended_sleep: 0,
+            next_spectator_frame: 0,
+            local_connect_status: connect_status,
+        }))))
+    }
+
+    /// Gets the number of players in the current session. This includes
+    /// users that are already disconnected.
+    pub fn player_count(&self) -> usize {
+        self.0.read().sync.player_count()
+    }
+
+    /// Checks if the session currently in the middle of a rollback.
+    pub fn in_rollback(&self) -> bool {
+        self.0.read().sync.in_rollback()
+    }
+
+    /// Gets the current frame of the game.
+    pub fn current_frame(&self) -> Frame {
+        self.0.read().sync.frame_count()
+    }
+
+    pub fn local_players(&self) -> Vec<BackrollPlayerHandle> {
+        self.0
+            .read()
+            .players
+            .iter()
+            .enumerate()
+            .filter(|(_, player)| player.is_local())
+            .map(|(i, _)| BackrollPlayerHandle(i))
+            .collect()
+    }
+
+    pub fn remote_players(&self) -> Vec<BackrollPlayerHandle> {
+        self.0
+            .read()
+            .players
+            .iter()
+            .enumerate()
+            .filter(|(_, player)| player.is_remote_player())
+            .map(|(i, _)| BackrollPlayerHandle(i))
+            .collect()
+    }
+
+    /// Checks if all remote players are synchronized. If all players are
+    /// local, this will always return true.
+    pub fn is_synchronized(&self) -> bool {
+        self.0.read().is_synchronized()
+    }
+
     /// Adds a local input for the current frame. This will register the input in the local
     /// input queues, as well as queue the input to be sent to all remote players. If called multiple
     /// times for the same player without advancing the session with [advance_frame], the previously
@@ -459,21 +529,22 @@ impl<T: BackrollConfig> P2PSession<T> {
     /// [BackrollError]: crate::BackrollError
     /// [advance_frame]: self::P2PSession::advance_frame
     pub fn add_local_input(
-        &mut self,
+        &self,
         player: BackrollPlayerHandle,
         input: T::Input,
     ) -> BackrollResult<()> {
-        if self.in_rollback() {
+        let mut session_ref = self.0.write();
+        if session_ref.sync.in_rollback() {
             return Err(BackrollError::InRollback);
         }
-        if self.synchronizing {
+        if session_ref.synchronizing {
             return Err(BackrollError::NotSynchronized);
         }
 
-        let queue = self.player_handle_to_queue(player)?;
-        let frame = self.sync.add_local_input(queue, input.clone())?;
+        let queue = session_ref.player_handle_to_queue(player)?;
+        let frame = session_ref.sync.add_local_input(queue, input.clone())?;
         if !is_null(frame) {
-            for player in self.players.iter_mut() {
+            for player in session_ref.players.iter_mut() {
                 player.send_input(FrameInput::<T::Input> { frame, input });
             }
         }
@@ -490,10 +561,11 @@ impl<T: BackrollConfig> P2PSession<T> {
     ///
     /// [SessionCallbacks]: crate::SessionCallbacks
     /// [add_local_input]: self::P2PSession::add_local_input
-    pub fn advance_frame(&mut self, callbacks: &mut impl SessionCallbacks<T>) {
-        info!("End of frame ({})...", self.sync.frame_count());
-        self.sync.increment_frame(callbacks);
-        self.do_poll(callbacks);
+    pub fn advance_frame(&self, callbacks: &mut impl SessionCallbacks<T>) {
+        let mut session_ref = self.0.write();
+        info!("End of frame ({})...", session_ref.sync.frame_count());
+        session_ref.sync.increment_frame(callbacks);
+        session_ref.do_poll(callbacks);
     }
 
     /// Disconnects a player from the game.
@@ -508,28 +580,29 @@ impl<T: BackrollConfig> P2PSession<T> {
     ///
     /// Returns [BackrollError::PlayerDisconnected] if the provided player is already disconnected.
     pub fn disconnect_player(
-        &mut self,
+        &self,
         callbacks: &mut impl SessionCallbacks<T>,
         player: BackrollPlayerHandle,
     ) -> BackrollResult<()> {
-        let queue = self.player_handle_to_queue(player)?;
-        if self.local_connect_status[queue].read().disconnected {
+        let mut session_ref = self.0.write();
+        let queue = session_ref.player_handle_to_queue(player)?;
+        if session_ref.local_connect_status[queue].read().disconnected {
             return Err(BackrollError::PlayerDisconnected(player));
         }
 
-        let last_frame = self.local_connect_status[queue].read().last_frame;
-        if self.players[queue].is_local() {
+        let last_frame = session_ref.local_connect_status[queue].read().last_frame;
+        if session_ref.players[queue].is_local() {
             // The player is local. This should disconnect the local player from the rest
             // of the game. All other players need to be disconnected.
             // that if the endpoint is not initalized, this must be the local player.
-            let current_frame = self.sync.frame_count();
+            let current_frame = session_ref.sync.frame_count();
             info!(
                 "Disconnecting local player {} at frame {} by user request.",
                 queue, last_frame
             );
-            for i in 0..self.players.len() {
-                if !self.players[i].is_local() {
-                    self.disconnect_player_queue(callbacks, i, current_frame);
+            for i in 0..session_ref.players.len() {
+                if !session_ref.players[i].is_local() {
+                    session_ref.disconnect_player_queue(callbacks, i, current_frame);
                 }
             }
         } else {
@@ -537,42 +610,9 @@ impl<T: BackrollConfig> P2PSession<T> {
                 "Disconnecting queue {} at frame {} by user request.",
                 queue, last_frame
             );
-            self.disconnect_player_queue(callbacks, queue, last_frame);
+            session_ref.disconnect_player_queue(callbacks, queue, last_frame);
         }
         Ok(())
-    }
-
-    fn disconnect_player_queue(
-        &mut self,
-        callbacks: &mut impl SessionCallbacks<T>,
-        queue: usize,
-        syncto: Frame,
-    ) {
-        let frame_count = self.sync.frame_count();
-
-        self.players[queue].disconnect();
-
-        info!("Changing queue {} local connect status for last frame from {} to {} on disconnect request (current: {}).",
-         queue, self.local_connect_status[queue].read().last_frame, syncto, frame_count);
-
-        {
-            let mut status = self.local_connect_status[queue].write();
-            status.disconnected = true;
-            status.last_frame = syncto;
-        }
-
-        if syncto < frame_count {
-            info!(
-                "Adjusting simulation to account for the fact that {} disconnected @ {}.",
-                queue, syncto
-            );
-            self.sync.adjust_simulation(callbacks, syncto);
-            info!("Finished adjusting simulation.");
-        }
-
-        callbacks.handle_event(BackrollEvent::Disconnected(BackrollPlayerHandle(queue)));
-
-        self.check_initial_sync(callbacks);
     }
 
     /// Gets network statistics with a remote player.
@@ -581,8 +621,9 @@ impl<T: BackrollConfig> P2PSession<T> {
     /// Returns [BackrollError::InvalidPlayer] if the provided player handle does not point a vali
     /// player.
     pub fn get_network_stats(&self, player: BackrollPlayerHandle) -> BackrollResult<NetworkStats> {
-        let queue = self.player_handle_to_queue(player)?;
-        Ok(self.players[queue]
+        let session_ref = self.0.read();
+        let queue = session_ref.player_handle_to_queue(player)?;
+        Ok(session_ref.players[queue]
             .get_network_stats()
             .unwrap_or_else(|| Default::default()))
     }
@@ -593,27 +634,13 @@ impl<T: BackrollConfig> P2PSession<T> {
     /// Returns [BackrollError::InvalidPlayer] if the provided player handle does not point a vali
     /// player.
     pub fn set_frame_delay(
-        &mut self,
+        &self,
         player: BackrollPlayerHandle,
         delay: Frame,
     ) -> BackrollResult<()> {
-        let queue = self.player_handle_to_queue(player)?;
-        self.sync.set_frame_delay(queue, delay);
+        let mut session_ref = self.0.write();
+        let queue = session_ref.player_handle_to_queue(player)?;
+        session_ref.sync.set_frame_delay(queue, delay);
         Ok(())
-    }
-
-    fn check_initial_sync(&mut self, callbacks: &mut impl SessionCallbacks<T>) {
-        if self.synchronizing && self.is_synchronized() {
-            callbacks.handle_event(BackrollEvent::Running);
-            self.synchronizing = false;
-        }
-    }
-
-    fn player_handle_to_queue(&self, player: BackrollPlayerHandle) -> BackrollResult<usize> {
-        let offset = player.0;
-        if offset >= self.player_count() {
-            return Err(BackrollError::InvalidPlayer(player));
-        }
-        Ok(offset)
     }
 }

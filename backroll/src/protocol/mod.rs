@@ -7,7 +7,7 @@ use crate::{
     BackrollConfig, Frame, NetworkStats, TaskPool,
 };
 use async_channel::TrySendError;
-use backroll_transport::connection::Peer;
+use backroll_transport::Peer;
 use bincode::config::Options;
 use futures::FutureExt;
 use futures_timer::Delay;

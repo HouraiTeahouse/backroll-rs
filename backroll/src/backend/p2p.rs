@@ -4,7 +4,7 @@ use crate::{
     is_null,
     protocol::{BackrollPeer, BackrollPeerConfig, ConnectionStatus, Event},
     sync::{self, BackrollSync},
-    transport::connection::Peer,
+    transport::Peer,
     BackrollConfig, BackrollEvent, Frame, NetworkStats, SessionCallbacks, TaskPool,
 };
 use parking_lot::RwLock;

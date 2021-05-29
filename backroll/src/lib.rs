@@ -30,8 +30,8 @@ pub struct BackrollPlayerHandle(pub usize);
 
 pub enum BackrollPlayer {
     Local,
-    Spectator(transport::connection::Peer),
-    Remote(transport::connection::Peer),
+    Spectator(transport::Peer),
+    Remote(transport::Peer),
 }
 
 impl BackrollPlayer {

@@ -1,6 +1,6 @@
 use async_channel::TrySendError;
 use async_net::{SocketAddr, UdpSocket};
-use backroll_transport::connection::{Peer, Peers};
+use backroll_transport::{Peer, Peers};
 use bevy_tasks::TaskPool;
 use std::convert::TryFrom;
 use std::net::{ToSocketAddrs, UdpSocket as BlockingUdpSocket};

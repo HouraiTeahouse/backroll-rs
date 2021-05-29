@@ -36,10 +36,9 @@ future.
 This repo contains the following crates:
 
  * backroll - the main Backroll interface, intended to be used as the original
-   GGPO. (Mostly complete)
- * backroll\_transport - An isolated set of transport layer abstractions. (In
-   progress)
+   GGPO. (Complete, untested)
+ * backroll\_transport - An isolated set of transport layer abstractions. 
  * backroll\_transport\_udp - A transport layer implementation using raw UDP
-   sockets. (Not started)
+   sockets. 
  * bevy\_backroll - a integration plugin for [bevy](https://bevyengine.org/).
    (Not started).

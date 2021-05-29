@@ -1,19 +1,15 @@
-use super::{
+use crate::{
     input::{FrameInput, GameInput, InputQueue},
     protocol::ConnectionStatus,
-    BackrollConfig, BackrollError, BackrollResult, Frame, SessionCallbacks,
+    BackrollConfig, BackrollError, BackrollResult, Frame, SessionCallbacks, NULL_FRAME,
 };
 use parking_lot::RwLock;
 use std::sync::Arc;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 const MAX_PREDICTION_FRAMES: usize = 8;
 
-pub struct Config<T>
-where
-    T: BackrollConfig,
-{
-    pub callbacks: Box<dyn SessionCallbacks<T>>,
+pub struct Config {
     pub player_count: usize,
 }
 
@@ -23,15 +19,15 @@ where
 {
     frame: super::Frame,
     data: Option<Box<T::State>>,
-    checksum: i32,
+    checksum: Option<u64>,
 }
 
 impl<T: BackrollConfig> Default for SavedFrame<T> {
     fn default() -> Self {
         Self {
-            frame: super::NULL_FRAME,
+            frame: NULL_FRAME,
             data: None,
-            checksum: 0,
+            checksum: None,
         }
     }
 }
@@ -44,10 +40,32 @@ where
     frames: [SavedFrame<T>; MAX_PREDICTION_FRAMES + 2],
 }
 
+impl<T: BackrollConfig> SavedState<T> {
+    pub fn push(&mut self, frame: SavedFrame<T>) {
+        self.head += 1;
+        self.head %= self.frames.len();
+        self.frames[self.head] = frame;
+        debug_assert!(self.head < self.frames.len());
+    }
+
+    /// Finds a saved state for a frame.
+    pub fn find(&self, frame: Frame) -> Option<&SavedFrame<T>> {
+        self.frames.iter().find(|saved| saved.frame == frame)
+    }
+
+    /// Peeks at the latest saved frame in the queue.
+    pub fn latest(&self) -> &SavedFrame<T> {
+        debug_assert!(self.head < self.frames.len());
+        &self.frames[self.head]
+    }
+}
+
 impl<T: BackrollConfig> Default for SavedState<T> {
     fn default() -> Self {
         Self {
-            head: 0,
+            // This should lead the first one saved frame to be at
+            // index 0.
+            head: MAX_PREDICTION_FRAMES + 1,
             frames: Default::default(),
         }
     }
@@ -59,7 +77,7 @@ where
 {
     saved_state: SavedState<T>,
     input_queues: Vec<InputQueue<T>>,
-    config: Config<T>,
+    config: Config,
     rolling_back: bool,
 
     last_confirmed_frame: Frame,
@@ -68,7 +86,7 @@ where
 }
 
 impl<T: BackrollConfig> BackrollSync<T> {
-    pub fn new(config: Config<T>, local_connect_status: Arc<[RwLock<ConnectionStatus>]>) -> Self {
+    pub fn new(config: Config, local_connect_status: Arc<[RwLock<ConnectionStatus>]>) -> Self {
         let input_queues = Self::create_queues(&config);
         Self {
             saved_state: Default::default(),
@@ -107,34 +125,34 @@ impl<T: BackrollConfig> BackrollSync<T> {
         self.input_queues[queue].set_frame_delay(delay);
     }
 
-    pub fn increment_frame(&mut self) {
+    pub fn increment_frame(&mut self, callbacks: &mut impl SessionCallbacks<T>) {
         self.frame_count += 1;
-        self.save_current_frame();
+        self.save_current_frame(callbacks);
     }
 
-    pub fn add_local_input(
-        &mut self,
-        queue: usize,
-        mut input: FrameInput<T::Input>,
-    ) -> BackrollResult<Frame> {
+    pub fn add_local_input(&mut self, queue: usize, mut input: T::Input) -> BackrollResult<Frame> {
         let frames_behind = self.frame_count - self.last_confirmed_frame;
         if self.frame_count >= MAX_PREDICTION_FRAMES as i32
             && frames_behind >= MAX_PREDICTION_FRAMES as i32
         {
-            warn!("Rejecting input from emulator: reached prediction barrier.");
+            warn!("Rejecting input: reached prediction barrier.");
             return Err(BackrollError::ReachedPredictionBarrier);
         }
 
-        if self.frame_count == 0 {
-            self.save_current_frame();
-        }
+        // FIXME(james7132): Move this somewhere else.
+        // if self.frame_count == 0 {
+        //     self.save_current_frame(callbacks);
+        // }
 
         info!(
             "Sending undelayed local frame {} to queue {}.",
             self.frame_count, queue
         );
-        input.frame = self.frame_count;
-        self.input_queues[queue].add_input(input);
+
+        self.input_queues[queue].add_input(FrameInput::<T::Input> {
+            frame: self.frame_count,
+            input,
+        });
 
         Ok(self.frame_count)
     }
@@ -143,12 +161,11 @@ impl<T: BackrollConfig> BackrollSync<T> {
         self.input_queues[queue].add_input(input);
     }
 
-    pub fn get_confirmed_inputs(&mut self, frame: Frame) -> (GameInput<T::Input>, u32) {
-        let mut disconnect_flags = 0;
+    pub fn get_confirmed_inputs(&mut self, frame: Frame) -> GameInput<T::Input> {
         let mut output: GameInput<T::Input> = Default::default();
         for idx in 0..self.config.player_count {
             let input = if self.is_disconnected(idx) {
-                disconnect_flags |= 1 << idx;
+                output.disconnected |= 1 << idx;
                 Default::default()
             } else {
                 self.input_queues[idx]
@@ -158,49 +175,34 @@ impl<T: BackrollConfig> BackrollSync<T> {
             };
             output.inputs[idx] = input.input.clone();
         }
-        (output, disconnect_flags)
+        output
     }
 
-    pub fn synchronize_inputs(&self) -> (GameInput<T::Input>, u32) {
-        let mut disconnect_flags = 0;
+    pub fn synchronize_inputs(&self) -> GameInput<T::Input> {
         let mut output: GameInput<T::Input> = Default::default();
         for idx in 0..self.config.player_count {
             if self.is_disconnected(idx) {
-                disconnect_flags |= 1 << idx;
+                output.disconnected |= 1 << idx;
             } else if let Some(confirmed) =
                 self.input_queues[idx].get_confirmed_input(self.frame_count())
             {
                 output.inputs[idx] = confirmed.input.clone();
             }
         }
-        (output, disconnect_flags)
+        output
     }
 
-    pub fn check_simulation(&mut self) {
+    pub fn check_simulation(&mut self, callbacks: &mut impl SessionCallbacks<T>) {
         if let Some(seek_to) = self.check_simulation_consistency() {
-            self.adjust_simulation(seek_to);
+            self.adjust_simulation(callbacks, seek_to);
         }
     }
 
-    fn find_saved_frame_index(&self, frame: Frame) -> usize {
-        self.saved_state
-            .frames
-            .iter()
-            .enumerate()
-            .find(|(_, saved)| saved.frame == frame)
-            .unwrap_or_else(|| panic!("Could not find saved frame index for frame: {}", frame))
-            .0
-    }
-
     pub fn get_last_saved_frame(&self) -> &SavedFrame<T> {
-        let idx = match self.saved_state.head {
-            0 => self.saved_state.frames.len() - 1,
-            x => x - 1,
-        };
-        &self.saved_state.frames[idx]
+        self.saved_state.latest()
     }
 
-    pub fn load_frame(&mut self, frame: Frame) {
+    pub fn load_frame(&mut self, callbacks: &mut impl SessionCallbacks<T>, frame: Frame) {
         // find the frame in question
         if frame == self.frame_count {
             info!("Skipping NOP.");
@@ -208,35 +210,43 @@ impl<T: BackrollConfig> BackrollSync<T> {
         }
 
         // Move the head pointer back and load it up
-        self.saved_state.head = self.find_saved_frame_index(frame);
-        let state = &self.saved_state.frames[self.saved_state.head];
+        let state = self
+            .saved_state
+            .find(frame)
+            .unwrap_or_else(|| panic!("Could not find saved frame index for frame: {}", frame));
 
-        info!("=== Loading frame info (checksum: {:08x}).", state.checksum);
-        debug_assert!(state.data.is_some());
-        // self.config.callbacks.load_game_state(state);
+        debug!(
+            "=== Loading frame info (checksum: {:08x}).",
+            state.checksum.unwrap_or(0)
+        );
+        callbacks.load_state(
+            state
+                .data
+                .as_deref()
+                .expect("Should not be loading unsaved frames"),
+        );
 
         // Reset framecount and the head of the state ring-buffer to point in
         // advance of the current frame (as if we had just finished executing it).
-        self.frame_count = state.frame;
+        self.frame_count = frame;
         self.saved_state.head = (self.saved_state.head + 1) % self.saved_state.frames.len();
     }
 
-    pub fn save_current_frame(&mut self) {
-        {
-            let state = &mut self.saved_state.frames[self.saved_state.head];
-            state.frame = self.frame_count;
-            // let (save, checksum) = self.config.callbacks.save_game_state(state->frame);
-            // state.data = Some(save);
-            // state.checksum = checksum;
-            info!(
-                "=== Saved frame info {} (checksum: {:08x}).",
-                state.frame, state.checksum
-            );
-        };
-        self.saved_state.head = (self.saved_state.head + 1) % self.saved_state.frames.len();
+    pub fn save_current_frame(&mut self, callbacks: &mut impl SessionCallbacks<T>) {
+        let (data, checksum) = callbacks.save_state();
+        self.saved_state.push(SavedFrame::<T> {
+            frame: self.frame_count,
+            data: Some(Box::new(data)),
+            checksum,
+        });
+        info!(
+            "=== Saved frame info {} (checksum: {:08x}).",
+            self.frame_count,
+            checksum.unwrap_or(0)
+        );
     }
 
-    pub fn adjust_simulation(&mut self, seek_to: Frame) {
+    pub fn adjust_simulation(&mut self, callbacks: &mut impl SessionCallbacks<T>, seek_to: Frame) {
         let frame_count = self.frame_count;
         let count = self.frame_count - seek_to;
 
@@ -244,13 +254,15 @@ impl<T: BackrollConfig> BackrollSync<T> {
         self.rolling_back = true;
 
         //  Flush our input queue and load the last frame.
-        self.load_frame(seek_to);
+        self.load_frame(callbacks, seek_to);
         debug_assert!(self.frame_count == seek_to);
 
         // Advance frame by frame (stuffing notifications back to
         // the master).
         self.reset_prediction(self.frame_count);
         for _ in 0..count {
+            let inputs = self.synchronize_inputs();
+            callbacks.advance_frame(inputs);
             // _callbacks.advance_frame(0);
         }
         debug_assert!(self.frame_count == frame_count);
@@ -278,7 +290,7 @@ impl<T: BackrollConfig> BackrollSync<T> {
         status.disconnected && status.last_frame < self.frame_count()
     }
 
-    fn create_queues(config: &Config<T>) -> Vec<InputQueue<T>> {
+    fn create_queues(config: &Config) -> Vec<InputQueue<T>> {
         (0..config.player_count)
             .map(|_| InputQueue::new())
             .collect()

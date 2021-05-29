@@ -127,7 +127,6 @@ where
     T: BackrollConfig,
 {
     players: Vec<BackrollPlayer>,
-    callbacks: Box<dyn SessionCallbacks<T>>,
     disconnect_timeout: Duration,
     disconnect_notify_start: Duration,
     marker_: std::marker::PhantomData<T>,
@@ -137,10 +136,9 @@ impl<T> P2PSessionBuilder<T>
 where
     T: BackrollConfig,
 {
-    pub fn new(callbacks: Box<dyn SessionCallbacks<T>>) -> Self {
+    pub fn new() -> Self {
         Self {
             players: Vec::new(),
-            callbacks,
             disconnect_timeout: DEFAULT_DISCONNECT_TIMEOUT,
             disconnect_notify_start: DEFAULT_DISCONNECT_NOTIFY_START,
             marker_: Default::default(),
@@ -183,8 +181,8 @@ where
 }
 
 impl<T: BackrollConfig> P2PSession<T> {
-    pub fn build(callbacks: Box<dyn SessionCallbacks<T>>) -> P2PSessionBuilder<T> {
-        P2PSessionBuilder::new(callbacks)
+    pub fn build() -> P2PSessionBuilder<T> {
+        P2PSessionBuilder::new()
     }
 
     fn new_internal(builder: P2PSessionBuilder<T>, task_pool: TaskPool) -> Self {
@@ -193,7 +191,7 @@ impl<T: BackrollConfig> P2PSession<T> {
             (0..player_count).map(|_| Default::default()).collect();
         let connect_status: Arc<[RwLock<ConnectionStatus>]> = connect_status.into();
 
-        let players = builder
+        let players: Vec<Player<T>> = builder
             .players
             .iter()
             .enumerate()
@@ -207,15 +205,13 @@ impl<T: BackrollConfig> P2PSession<T> {
                 )
             })
             .collect();
-        let config = sync::Config::<T> {
-            callbacks: builder.callbacks,
-            player_count,
-        };
+        let synchronizing = players.iter().any(|player| !player.is_local());
+        let config = sync::Config { player_count };
         let sync = BackrollSync::<T>::new(config, connect_status.clone());
         Self {
             sync,
             players,
-            synchronizing: true,
+            synchronizing,
             next_recommended_sleep: 0,
             next_spectator_frame: 0,
             local_connect_status: connect_status,
@@ -238,16 +234,60 @@ impl<T: BackrollConfig> P2PSession<T> {
             .flatten()
     }
 
+    /// Gets the number of players in the current session. This includes
+    /// users that are already disconnected.
     pub fn player_count(&self) -> usize {
         self.sync.player_count()
     }
 
-    fn do_poll(&mut self) {
+    /// Checks if the session currently in the middle of a rollback.
+    pub fn in_rollback(&self) -> bool {
+        self.sync.in_rollback()
+    }
+
+    /// Gets the current frame of the game.
+    pub fn current_frame(&self) -> Frame {
+        self.sync.frame_count()
+    }
+
+    pub fn local_players(&self) -> impl Iterator<Item = BackrollPlayerHandle> + '_ {
+        self.players
+            .iter()
+            .enumerate()
+            .filter(|(_, player)| player.is_local())
+            .map(|(i, _)| BackrollPlayerHandle(i))
+    }
+
+    pub fn remote_players(&self) -> impl Iterator<Item = BackrollPlayerHandle> + '_ {
+        self.players
+            .iter()
+            .enumerate()
+            .filter(|(_, player)| player.is_remote_player())
+            .map(|(i, _)| BackrollPlayerHandle(i))
+    }
+
+    /// Checks if all remote players are synchronized. If all players are
+    /// local, this will always return true.
+    pub fn is_synchronized(&self) -> bool {
+        // Check to see if everyone is now synchronized.  If so,
+        // go ahead and tell the client that we're ok to accept input.
+        for (i, player) in self.players.iter().enumerate() {
+            if !player.is_local()
+                && !player.is_synchronized()
+                && !self.local_connect_status[i].read().disconnected
+            {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn do_poll(&mut self, callbacks: &mut impl SessionCallbacks<T>) {
         if self.sync.in_rollback() || self.synchronizing {
             return;
         }
 
-        self.sync.check_simulation();
+        self.sync.check_simulation(callbacks);
 
         // notify all of our endpoints of their local frame number for their
         // next connection quality report
@@ -257,9 +297,9 @@ impl<T: BackrollConfig> P2PSession<T> {
         }
 
         let min_frame = if self.players().count() <= 2 {
-            self.poll_2_players()
+            self.poll_2_players(callbacks)
         } else {
-            self.poll_n_players()
+            self.poll_n_players(callbacks)
         };
 
         info!("last confirmed frame in p2p backend is {}.", min_frame);
@@ -297,7 +337,7 @@ impl<T: BackrollConfig> P2PSession<T> {
         }
     }
 
-    fn poll_2_players(&mut self) -> Frame {
+    fn poll_2_players(&mut self, callbacks: &mut impl SessionCallbacks<T>) -> Frame {
         // discard confirmed frames as appropriate
         let mut min_frame = Frame::MAX;
         for i in 0..self.players.len() {
@@ -318,14 +358,14 @@ impl<T: BackrollConfig> P2PSession<T> {
             );
             if !queue_connected && !local_status.disconnected {
                 info!("disconnecting player {} by remote request.", i);
-                self.disconnect_player_queue(i, min_frame);
+                self.disconnect_player_queue(callbacks, i, min_frame);
             }
             info!("min_frame = {}.", min_frame);
         }
         return min_frame;
     }
 
-    fn poll_n_players(&mut self) -> Frame {
+    fn poll_n_players(&mut self, callbacks: &mut impl SessionCallbacks<T>) -> Frame {
         // discard confirmed frames as appropriate
         let mut min_frame = Frame::MAX;
         for queue in 0..self.players.len() {
@@ -366,7 +406,7 @@ impl<T: BackrollConfig> P2PSession<T> {
                 // and later receive a disconnect notification for frame n-1.
                 if !local_status.disconnected || local_status.last_frame > queue_min_confirmed {
                     info!("disconnecting queue {} by remote request.", queue);
-                    self.disconnect_player_queue(queue, queue_min_confirmed);
+                    self.disconnect_player_queue(callbacks, queue, queue_min_confirmed);
                 }
             }
             info!("min_frame = {}.", min_frame);
@@ -374,12 +414,31 @@ impl<T: BackrollConfig> P2PSession<T> {
         return min_frame;
     }
 
+    /// Adds a local input for the current frame. This will register the input in the local
+    /// input queues, as well as queue the input to be sent to all remote players. If called multiple
+    /// times for the same player without advancing the session with [advance_frame], the previously
+    /// queued input for the frame will be overwritten.
+    ///
+    /// For a corrrect simulation, this must be called on all local players every frame before calling
+    /// [advance_frame].
+    ///
+    /// # Errors
+    /// Returns [BackrollError::InRollback] if the session is currently in the middle of a rollback.
+    ///
+    /// Returns [BackrollError::NotSynchronized] if the all of the remote peers have not yet
+    /// synchornized.
+    ///
+    /// Returns [BackrollError::InvalidPlayer] if the provided player handle does not point a vali
+    /// player.
+    ///
+    /// [BackrollError]: crate::BackrollError
+    /// [advance_frame]: self::P2PSession::advance_frame
     pub fn add_local_input(
         &mut self,
         player: BackrollPlayerHandle,
-        input: FrameInput<T::Input>,
+        input: T::Input,
     ) -> BackrollResult<()> {
-        if self.sync.in_rollback() {
+        if self.in_rollback() {
             return Err(BackrollError::InRollback);
         }
         if self.synchronizing {
@@ -390,30 +449,44 @@ impl<T: BackrollConfig> P2PSession<T> {
         let frame = self.sync.add_local_input(queue, input.clone())?;
         if !is_null(frame) {
             for player in self.players.iter_mut() {
-                player.send_input(input.clone())
+                player.send_input(FrameInput::<T::Input> { frame, input });
             }
         }
 
         Ok(())
     }
 
-    pub fn sync_input(&self) -> BackrollResult<(GameInput<T::Input>, u32)> {
-        // Wait until we've started to return inputs.
-        if self.synchronizing {
-            return Err(BackrollError::NotSynchronized);
-        }
-
-        Ok(self.sync.synchronize_inputs())
-    }
-
-    pub fn increment_frame(&mut self) -> BackrollResult<()> {
+    /// Advances the game simulation by a single frame. This will call [SessionCallbacks::advance_frame]
+    /// then check if the simulation is consistent with the inputs sent by remote players. If not, a
+    /// rollback will be triggered, and the game will be saved and resimulated from the point of rollback.
+    ///
+    /// For a corrrect simulation, [add_local_input] must be called on all local players every frame before
+    /// calling this.
+    ///
+    /// [SessionCallbacks]: crate::SessionCallbacks
+    /// [add_local_input]: self::P2PSession::add_local_input
+    pub fn advance_frame(&mut self, callbacks: &mut impl SessionCallbacks<T>) {
         info!("End of frame ({})...", self.sync.frame_count());
-        self.sync.increment_frame();
-        self.do_poll();
-        Ok(())
+        self.sync.increment_frame(callbacks);
+        self.do_poll(callbacks);
     }
 
-    pub fn disconnect_player(&mut self, player: BackrollPlayerHandle) -> BackrollResult<()> {
+    /// Disconnects a player from the game.
+    ///
+    /// If called on a local player, this will disconnect the client from all remote peers.
+    ///
+    /// If called on a remote player, this will disconnect the connection with only that player.
+    ///
+    /// # Errors
+    /// Returns [BackrollError::InvalidPlayer] if the provided player handle does not point a vali
+    /// player.
+    ///
+    /// Returns [BackrollError::PlayerDisconnected] if the provided player is already disconnected.
+    pub fn disconnect_player(
+        &mut self,
+        callbacks: &mut impl SessionCallbacks<T>,
+        player: BackrollPlayerHandle,
+    ) -> BackrollResult<()> {
         let queue = self.player_handle_to_queue(player)?;
         if self.local_connect_status[queue].read().disconnected {
             return Err(BackrollError::PlayerDisconnected(player));
@@ -431,7 +504,7 @@ impl<T: BackrollConfig> P2PSession<T> {
             );
             for i in 0..self.players.len() {
                 if !self.players[i].is_local() {
-                    self.disconnect_player_queue(i, current_frame);
+                    self.disconnect_player_queue(callbacks, i, current_frame);
                 }
             }
         } else {
@@ -439,13 +512,17 @@ impl<T: BackrollConfig> P2PSession<T> {
                 "Disconnecting queue {} at frame {} by user request.",
                 queue, last_frame
             );
-            self.disconnect_player_queue(queue, last_frame);
+            self.disconnect_player_queue(callbacks, queue, last_frame);
         }
         Ok(())
     }
 
-    fn disconnect_player_queue(&mut self, queue: usize, syncto: Frame) {
-        // GGPOEvent info;
+    fn disconnect_player_queue(
+        &mut self,
+        callbacks: &mut impl SessionCallbacks<T>,
+        queue: usize,
+        syncto: Frame,
+    ) {
         let frame_count = self.sync.frame_count();
 
         self.players[queue].disconnect();
@@ -464,7 +541,7 @@ impl<T: BackrollConfig> P2PSession<T> {
                 "Adjusting simulation to account for the fact that {} disconnected @ {}.",
                 queue, syncto
             );
-            self.sync.adjust_simulation(syncto);
+            self.sync.adjust_simulation(callbacks, syncto);
             info!("Finished adjusting simulation.");
         }
 
@@ -475,6 +552,11 @@ impl<T: BackrollConfig> P2PSession<T> {
         self.check_initial_sync();
     }
 
+    /// Gets network statistics with a remote player.
+    ///
+    /// # Errors
+    /// Returns [BackrollError::InvalidPlayer] if the provided player handle does not point a vali
+    /// player.
     pub fn get_network_stats(&self, player: BackrollPlayerHandle) -> BackrollResult<NetworkStats> {
         let queue = self.player_handle_to_queue(player)?;
         Ok(self.players[queue]
@@ -482,6 +564,11 @@ impl<T: BackrollConfig> P2PSession<T> {
             .unwrap_or_else(|| Default::default()))
     }
 
+    /// Sets the frame delay for a given player.
+    ///
+    /// # Errors
+    /// Returns [BackrollError::InvalidPlayer] if the provided player handle does not point a vali
+    /// player.
     pub fn set_frame_delay(
         &mut self,
         player: BackrollPlayerHandle,
@@ -493,22 +580,11 @@ impl<T: BackrollConfig> P2PSession<T> {
     }
 
     fn check_initial_sync(&mut self) {
-        if self.synchronizing {
-            // Check to see if everyone is now synchronized.  If so,
-            // go ahead and tell the client that we're ok to accept input.
-            for (i, player) in self.players.iter().enumerate() {
-                if !player.is_local()
-                    && !player.is_synchronized()
-                    && !self.local_connect_status[i].read().disconnected
-                {
-                    return;
-                }
-            }
-
+        if self.synchronizing && self.is_synchronized() {
             // GGPOEvent info;
             // info.code = GGPO_EVENTCODE_RUNNING;
             // _callbacks.on_event(&info);
-            // _synchronizing = false;
+            self.synchronizing = false;
         }
     }
 

@@ -1,4 +1,7 @@
-use super::{BackrollConfig, Frame, MAX_PLAYERS_PER_MATCH, MAX_ROLLBACK_FRAMES};
+use crate::{
+    BackrollConfig, BackrollError, BackrollPlayerHandle, Frame, MAX_PLAYERS_PER_MATCH,
+    MAX_ROLLBACK_FRAMES,
+};
 use std::convert::TryFrom;
 use tracing::info;
 
@@ -34,21 +37,45 @@ impl<T: Default> FrameInput<T> {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GameInput<T> {
-    pub frame: Frame,
-    pub inputs: [T; MAX_PLAYERS_PER_MATCH],
+    pub(crate) frame: Frame,
+    pub(crate) disconnected: u8,
+    pub(crate) inputs: [T; MAX_PLAYERS_PER_MATCH],
 }
 
 impl<T: Default> Default for GameInput<T> {
     fn default() -> Self {
         Self {
             frame: super::NULL_FRAME,
+            disconnected: 0,
             inputs: Default::default(),
         }
     }
 }
 
 impl<T: Default> GameInput<T> {
-    pub fn clear(&mut self) {
+    /// Gets the input for a specific player. Returns [InvalidPlayer]
+    /// if the provided player handle does not correspond to a valid player.
+    ///
+    /// [InvalidPlayer]: crate::BackrollError::InvalidPlayer
+    pub fn get(&self, player: BackrollPlayerHandle) -> Result<&T, BackrollError> {
+        if player.0 >= MAX_PLAYERS_PER_MATCH {
+            return Err(BackrollError::InvalidPlayer(player));
+        }
+        Ok(&self.inputs[player.0])
+    }
+
+    /// Checks if a given player is currently disconnected. Returns [InvalidPlayer]
+    /// if the provided player handle does not correspond to a valid player.
+    ///
+    /// [InvalidPlayer]: crate::BackrollError::InvalidPlayer
+    pub fn is_disconnected(&self, player: BackrollPlayerHandle) -> Result<bool, BackrollError> {
+        if player.0 >= MAX_PLAYERS_PER_MATCH {
+            return Err(BackrollError::InvalidPlayer(player));
+        }
+        Ok(self.disconnected & (1 << player.0) != 0)
+    }
+
+    pub(crate) fn clear(&mut self) {
         self.inputs = Default::default();
     }
 }

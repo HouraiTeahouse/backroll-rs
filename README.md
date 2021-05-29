@@ -1,5 +1,10 @@
 # backroll-rs
 
+[![crates.io](https://img.shields.io/crates/v/backroll.svg)](https://crates.io/crates/backroll)
+[![Documentation](https://docs.rs/backroll/badge.svg)](https://docs.rs/backroll-transport)
+![License](https://img.shields.io/crates/l/backroll-rs)
+[![Discord](https://img.shields.io/discord/151219753434742784.svg?label=&logo=discord&logoColor=ffffff&color=7389D8&labelColor=6A7EC2)](https://discord.gg/VuZhs9V)
+
 Backroll is a pure Rust implementation of [GGPO](https://www.ggpo.net/)
 rollback networking library.
 

@@ -2,6 +2,10 @@
 name = "backroll"
 version = "0.1.0"
 edition = "2018"
+authors = ["Hourai Teahouse Developers <contact@houraiteahouse.net>"]
+description = "An async transport abstraction layer."
+license = "ISC"
+readme = "../README.md"
 
 [features]
 default = ["bevy"]

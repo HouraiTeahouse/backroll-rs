@@ -1,9 +1,10 @@
 [package]
-name = "backroll_transport_udp"
+name = "backroll-transport-udp"
 version = "0.1.0"
 edition = "2018"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+authors = ["Hourai Teahouse Developers <contact@houraiteahouse.net>"]
+description = "A raw async UDP implementation for backroll-transport."
+license = "ISC"
 
 [dependencies]
 backroll_transport = { path = "../backroll_transport" }

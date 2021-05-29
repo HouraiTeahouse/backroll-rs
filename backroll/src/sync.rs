@@ -126,6 +126,11 @@ impl<T: BackrollConfig> BackrollSync<T> {
     }
 
     pub fn increment_frame(&mut self, callbacks: &mut impl SessionCallbacks<T>) {
+        if self.frame_count == 0 {
+            self.save_current_frame(callbacks);
+        }
+        let inputs = self.synchronize_inputs();
+        callbacks.advance_frame(inputs);
         self.frame_count += 1;
         self.save_current_frame(callbacks);
     }
@@ -138,11 +143,6 @@ impl<T: BackrollConfig> BackrollSync<T> {
             warn!("Rejecting input: reached prediction barrier.");
             return Err(BackrollError::ReachedPredictionBarrier);
         }
-
-        // FIXME(james7132): Move this somewhere else.
-        // if self.frame_count == 0 {
-        //     self.save_current_frame(callbacks);
-        // }
 
         info!(
             "Sending undelayed local frame {} to queue {}.",
@@ -263,7 +263,6 @@ impl<T: BackrollConfig> BackrollSync<T> {
         for _ in 0..count {
             let inputs = self.synchronize_inputs();
             callbacks.advance_frame(inputs);
-            // _callbacks.advance_frame(0);
         }
         debug_assert!(self.frame_count == frame_count);
 

@@ -34,6 +34,16 @@ pub enum BackrollPlayer {
     Remote(transport::connection::Peer),
 }
 
+impl BackrollPlayer {
+    pub(crate) fn is_local(&self) -> bool {
+        if let Self::Local = self {
+            true
+        } else {
+            false
+        }
+    }
+}
+
 pub trait BackrollConfig: 'static {
     type Input: Default + Eq + Clone + bytemuck::Pod + Send + Sync;
 
@@ -72,7 +82,7 @@ where
 }
 
 pub enum BackrollError {
-    UnsupportedOperation,
+    MultipleLocalPlayers,
     InRollback,
     NotSynchronized,
     ReachedPredictionBarrier,
@@ -93,4 +103,32 @@ pub struct NetworkStats {
     pub remote_frames_behind: Frame,
 }
 
-pub enum BackrollEvent {}
+pub enum BackrollEvent {
+    /// A initial response packet from the remote player has been recieved.
+    Connected(BackrollPlayerHandle),
+    /// A response from a remote player has been recieved during the initial
+    /// synchronization handshake.
+    Synchronizing {
+        player: BackrollPlayerHandle,
+        count: u8,
+        total: u8,
+    },
+    /// The initial synchronization handshake has been completed. The connection
+    /// is considered live now.
+    Synchronized(BackrollPlayerHandle),
+    /// All remote peers are now synchronized, the session is can now start
+    /// running.
+    Running,
+    /// The connection with a remote player has been disconnected.
+    Disconnected(BackrollPlayerHandle),
+    /// The local client is several frames ahead of all other peers. Might need
+    /// to stall a few frames to allow others to catch up.
+    TimeSync { frames_ahead: u8 },
+    /// The connection with a remote player has been temporarily interrupted.
+    ConnectionInterrupted {
+        player: BackrollPlayerHandle,
+        disconnect_timeout: Duration,
+    },
+    /// The connection with a remote player has been resumed after being interrupted.
+    ConnectionResumed(BackrollPlayerHandle),
+}

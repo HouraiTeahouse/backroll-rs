@@ -5,7 +5,7 @@ use crate::{
     protocol::{BackrollPeer, BackrollPeerConfig, ConnectionStatus, Event},
     sync::{self, BackrollSync},
     transport::connection::Peer,
-    BackrollConfig, Frame, NetworkStats, SessionCallbacks, TaskPool,
+    BackrollConfig, BackrollEvent, Frame, NetworkStats, SessionCallbacks, TaskPool,
 };
 use parking_lot::RwLock;
 use std::sync::Arc;
@@ -136,6 +136,9 @@ impl<T> P2PSessionBuilder<T>
 where
     T: BackrollConfig,
 {
+    /// Creates a new builder. Identical to [P2PSession::build].
+    ///
+    /// [P2PSession]: self::P2PSession
     pub fn new() -> Self {
         Self {
             players: Vec::new(),
@@ -145,23 +148,37 @@ where
         }
     }
 
+    /// Sets how long the client will wait for a packet from a remote player
+    /// before considering the connection disconnected. Defaults to 5000ms.
     pub fn with_disconnect_timeout(mut self, timeout: Duration) -> Self {
         self.disconnect_timeout = timeout;
         self
     }
 
+    /// Sets how long the client will wait for a packet from a remote player before
+    /// before firing a [BackrollEvent::ConnectionInterrupted] event. Defaults to 750ms.
+    ///
+    /// [BackrollEvent]: crate::BackrollEvent
     pub fn with_disconnect_notify_start(mut self, timeout: Duration) -> Self {
         self.disconnect_timeout = timeout;
         self
     }
 
+    /// Adds a player to the session and returns the corresponding handle.
     pub fn add_player(&mut self, player: BackrollPlayer) -> BackrollPlayerHandle {
         let id = self.players.len();
         self.players.push(player);
         BackrollPlayerHandle(id)
     }
 
-    pub fn start(self, pool: TaskPool) -> P2PSession<T> {
+    /// Constructs and starts the P2PSession. Consumes the builder.
+    ///
+    /// # Errors
+    /// Returns [BackrollError::MultipleLocalPlayers] if there are multiple local players.
+    /// Backroll currently only supports one local player.
+    ///
+    /// [BackrolLError]: crate::BackrolLError
+    pub fn start(self, pool: TaskPool) -> BackrollResult<P2PSession<T>> {
         P2PSession::new_internal(self, pool)
     }
 }
@@ -185,7 +202,15 @@ impl<T: BackrollConfig> P2PSession<T> {
         P2PSessionBuilder::new()
     }
 
-    fn new_internal(builder: P2PSessionBuilder<T>, task_pool: TaskPool) -> Self {
+    fn new_internal(builder: P2PSessionBuilder<T>, task_pool: TaskPool) -> BackrollResult<Self> {
+        let local_player_count = builder
+            .players
+            .iter()
+            .filter(|player| player.is_local())
+            .count();
+        if local_player_count > 1 {
+            return Err(BackrollError::MultipleLocalPlayers);
+        }
         let player_count = builder.players.len();
         let connect_status: Vec<RwLock<ConnectionStatus>> =
             (0..player_count).map(|_| Default::default()).collect();
@@ -205,17 +230,18 @@ impl<T: BackrollConfig> P2PSession<T> {
                 )
             })
             .collect();
+
         let synchronizing = players.iter().any(|player| !player.is_local());
         let config = sync::Config { player_count };
         let sync = BackrollSync::<T>::new(config, connect_status.clone());
-        Self {
+        Ok(Self {
             sync,
             players,
             synchronizing,
             next_recommended_sleep: 0,
             next_spectator_frame: 0,
             local_connect_status: connect_status,
-        }
+        })
     }
 
     fn players(&self) -> impl Iterator<Item = &BackrollPeer<T>> {
@@ -328,10 +354,9 @@ impl<T: BackrollConfig> P2PSession<T> {
                 .map(|player| player.recommend_frame_delay())
                 .max();
             if let Some(interval) = interval {
-                // GGPOEvent info;
-                // info.code = GGPO_EVENTCODE_TIMESYNC;
-                // info.u.timesync.frames_ahead = interval;
-                // _callbacks.on_event(&info);
+                callbacks.handle_event(BackrollEvent::TimeSync {
+                    frames_ahead: interval as u8,
+                });
                 self.next_recommended_sleep = current_frame + RECOMMENDATION_INTERVAL;
             }
         }
@@ -545,11 +570,9 @@ impl<T: BackrollConfig> P2PSession<T> {
             info!("Finished adjusting simulation.");
         }
 
-        // info.code = GGPO_EVENTCODE_DISCONNECTED_FROM_PEER;
-        // info.u.disconnected.player = QueueToPlayerHandle(queue);
-        // _callbacks.on_event(&info);
+        callbacks.handle_event(BackrollEvent::Disconnected(BackrollPlayerHandle(queue)));
 
-        self.check_initial_sync();
+        self.check_initial_sync(callbacks);
     }
 
     /// Gets network statistics with a remote player.
@@ -579,11 +602,9 @@ impl<T: BackrollConfig> P2PSession<T> {
         Ok(())
     }
 
-    fn check_initial_sync(&mut self) {
+    fn check_initial_sync(&mut self, callbacks: &mut impl SessionCallbacks<T>) {
         if self.synchronizing && self.is_synchronized() {
-            // GGPOEvent info;
-            // info.code = GGPO_EVENTCODE_RUNNING;
-            // _callbacks.on_event(&info);
+            callbacks.handle_event(BackrollEvent::Running);
             self.synchronizing = false;
         }
     }

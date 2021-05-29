@@ -1,4 +1,5 @@
 use std::time::Duration;
+use thiserror::Error;
 
 mod protocol;
 
@@ -25,12 +26,16 @@ fn is_null(frame: Frame) -> bool {
     frame < 0
 }
 
+/// A handle for a player in a Backroll session.
 #[derive(Copy, Clone, Debug)]
 pub struct BackrollPlayerHandle(pub usize);
 
 pub enum BackrollPlayer {
+    /// The local player. Backroll currently only supports one local player per machine.
     Local,
+    /// A non-participating peer that recieves inputs but does not send any.
     Spectator(transport::Peer),
+    /// A remote player that is not on the local session.
     Remote(transport::Peer),
 }
 
@@ -81,12 +86,19 @@ where
     fn handle_event(&mut self, event: BackrollEvent);
 }
 
+#[derive(Clone, Debug, Error)]
 pub enum BackrollError {
+    #[error("Multiple players ")]
     MultipleLocalPlayers,
+    #[error("Action cannot be taken while in rollback.")]
     InRollback,
+    #[error("The session has not been synchronized yet.")]
     NotSynchronized,
+    #[error("The simulation has reached the prediction barrier.")]
     ReachedPredictionBarrier,
+    #[error("Invalid player handle: {:?}", .0)]
     InvalidPlayer(BackrollPlayerHandle),
+    #[error("Player already disconnected: {:?}", .0)]
     PlayerDisconnected(BackrollPlayerHandle),
 }
 
@@ -103,6 +115,7 @@ pub struct NetworkStats {
     pub remote_frames_behind: Frame,
 }
 
+#[derive(Clone, Debug)]
 pub enum BackrollEvent {
     /// A initial response packet from the remote player has been recieved.
     Connected(BackrollPlayerHandle),

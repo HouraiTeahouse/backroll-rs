@@ -1,4 +1,5 @@
 #![feature(trait_alias)]
+#![feature(associated_type_bounds)]
 
 use backroll::{
     BackrollConfig, BackrollEvent, BackrollPlayerHandle, GameInput, P2PSession, SessionCallbacks,
@@ -9,32 +10,36 @@ use bevy_ecs::{
     world::World,
 };
 
-pub trait SampleInputFn<T> = Fn(BackrollPlayerHandle) -> T + Sync + Send;
-pub trait SaveWorldFn<T> = Fn(&mut World) -> (T, Option<u64>) + Sync + Send;
-pub trait LoadWorldFn<T> = Fn(&mut World, &T) -> () + Sync + Send;
+pub const BACKROLL_UPDATE: &str = "backroll_update";
 
+pub trait SampleInputFn<T> = System<In = BackrollPlayerHandle, Out = T> + Send + Sync + 'static;
+pub trait SaveWorldFn<T> = System<In = (), Out = (T, Option<u64>)> + Send + Sync + 'static;
+pub trait LoadWorldFn<T> = System<In = T, Out = ()> + Send + Sync + 'static;
+
+// TODO(james7132): Figure out a way to allow this to work without a Clone bound.
 struct BackrollStageCallbacks<'a, T>
 where
-    T: BackrollConfig,
+    T: BackrollConfig<State: Clone>,
 {
     world: &'a mut World,
     schedule: &'a mut Schedule,
-    save_world_fn: &'a dyn SaveWorldFn<T::State>,
-    load_world_fn: &'a dyn LoadWorldFn<T::State>,
+    save_world_fn: &'a mut dyn SaveWorldFn<T::State>,
+    load_world_fn: &'a mut dyn LoadWorldFn<T::State>,
 }
 
-impl<'a, T: BackrollConfig> SessionCallbacks<T> for BackrollStageCallbacks<'a, T> {
+impl<'a, T: BackrollConfig<State: Clone>> SessionCallbacks<T> for BackrollStageCallbacks<'a, T> {
     fn save_state(&mut self) -> (T::State, Option<u64>) {
-        (self.save_world_fn)(self.world)
+        self.save_world_fn.run((), self.world)
     }
 
     fn load_state(&mut self, state: &T::State) {
-        (self.load_world_fn)(self.world, state);
+        self.load_world_fn.run(state.clone(), self.world);
     }
 
     fn advance_frame(&mut self, input: GameInput<T::Input>) {
         // Insert input via Resource
-        *self.world
+        *self
+            .world
             .get_resource_mut::<GameInput<T::Input>>()
             .unwrap() = input;
         self.schedule.run_once(self.world);
@@ -47,7 +52,7 @@ impl<'a, T: BackrollConfig> SessionCallbacks<T> for BackrollStageCallbacks<'a, T
 
 pub struct BackrollStage<T>
 where
-    T: BackrollConfig,
+    T: BackrollConfig<State: Clone>,
 {
     schedule: Schedule,
     run_criteria: Option<Box<dyn System<In = (), Out = ShouldRun>>>,
@@ -57,15 +62,13 @@ where
     load_world_fn: Box<dyn LoadWorldFn<T::State>>,
 }
 
-impl<T: BackrollConfig> Stage for BackrollStage<T> {
+impl<T: BackrollConfig<State: Clone>> Stage for BackrollStage<T> {
     fn run(&mut self, world: &mut World) {
         loop {
             let should_run = if let Some(ref mut run_criteria) = self.run_criteria {
-                let should_run = run_criteria.run((), world);
-                // run_criteria.run_thread_local(world);
-                should_run
+                run_criteria.run((), world)
             } else {
-                ShouldRun::No
+                ShouldRun::Yes
             };
 
             if let ShouldRun::No = should_run {
@@ -80,9 +83,10 @@ impl<T: BackrollConfig> Stage for BackrollStage<T> {
             };
 
             for player_handle in session.local_players() {
-                let input = (self.input_sample_fn)(player_handle);
-                session.add_local_input(player_handle, input)
-                       .expect("Adding local input for local players shouldn't fail.")
+                let input = self.input_sample_fn.run(player_handle, world);
+                session
+                    .add_local_input(player_handle, input)
+                    .expect("Adding local input for local players shouldn't fail.")
             }
 
             world.insert_resource(GameInput::<T::Input>::default());
@@ -90,8 +94,8 @@ impl<T: BackrollConfig> Stage for BackrollStage<T> {
                 let mut callbacks = BackrollStageCallbacks::<T> {
                     world,
                     schedule: &mut self.schedule,
-                    save_world_fn: self.save_world_fn.as_ref(),
-                    load_world_fn: self.load_world_fn.as_ref(),
+                    save_world_fn: self.save_world_fn.as_mut(),
+                    load_world_fn: self.load_world_fn.as_mut(),
                 };
                 session.advance_frame(&mut callbacks);
             }

@@ -94,11 +94,7 @@ impl<T> FetchedInput<T> {
     }
 
     pub fn is_prediction(&self) -> bool {
-        if let Self::Prediction(_) = self {
-            true
-        } else {
-            false
-        }
+        matches!(self, Self::Prediction(_))
     }
 }
 
@@ -123,6 +119,7 @@ where
 }
 
 impl<T: BackrollConfig> InputQueue<T> {
+    #[allow(clippy::uninit_assumed_init)]
     pub fn new() -> Self {
         // This is necessary as Default is not defined on arrays of more
         // than 32 without a Copy trait bound.
@@ -132,7 +129,6 @@ impl<T: BackrollConfig> InputQueue<T> {
         // panic, so a buffer will always correctly be allocated as a large
         // zeroed buffer.
         let inputs: [FrameInput<T::Input>; MAX_ROLLBACK_FRAMES] = {
-            #[allow(clippy::uninit_assume_init)]
             let mut inputs: [FrameInput<T::Input>; MAX_ROLLBACK_FRAMES] =
                 unsafe { std::mem::MaybeUninit::uninit().assume_init() };
 

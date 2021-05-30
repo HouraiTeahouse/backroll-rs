@@ -1,6 +1,3 @@
-#![feature(trait_alias)]
-#![feature(associated_type_bounds)]
-
 use backroll::{
     BackrollConfig, BackrollEvent, BackrollPlayerHandle, GameInput, P2PSession, SessionCallbacks,
 };
@@ -12,28 +9,25 @@ use bevy_ecs::{
 
 pub const BACKROLL_UPDATE: &str = "backroll_update";
 
-pub trait SampleInputFn<T> = System<In = BackrollPlayerHandle, Out = T> + Send + Sync + 'static;
-pub trait SaveWorldFn<T> = System<In = (), Out = (T, Option<u64>)> + Send + Sync + 'static;
-pub trait LoadWorldFn<T> = System<In = T, Out = ()> + Send + Sync + 'static;
-
-// TODO(james7132): Figure out a way to allow this to work without a Clone bound.
 struct BackrollStageCallbacks<'a, T>
 where
-    T: BackrollConfig<State: Clone>,
+    T: BackrollConfig,
 {
     world: &'a mut World,
     schedule: &'a mut Schedule,
-    save_world_fn: &'a mut dyn SaveWorldFn<T::State>,
-    load_world_fn: &'a mut dyn LoadWorldFn<T::State>,
+    save_world_fn:
+        &'a mut (dyn System<In = (), Out = (T::State, Option<u64>)> + Send + Sync + 'static),
+    load_world_fn: &'a mut (dyn System<In = T::State, Out = ()> + Send + Sync + 'static),
+    data: std::marker::PhantomData<T>,
 }
 
-impl<'a, T: BackrollConfig<State: Clone>> SessionCallbacks<T> for BackrollStageCallbacks<'a, T> {
+impl<'a, T: BackrollConfig> SessionCallbacks<T> for BackrollStageCallbacks<'a, T> {
     fn save_state(&mut self) -> (T::State, Option<u64>) {
         self.save_world_fn.run((), self.world)
     }
 
-    fn load_state(&mut self, state: &T::State) {
-        self.load_world_fn.run(state.clone(), self.world);
+    fn load_state(&mut self, state: T::State) {
+        self.load_world_fn.run(state, self.world);
     }
 
     fn advance_frame(&mut self, input: GameInput<T::Input>) {
@@ -52,17 +46,18 @@ impl<'a, T: BackrollConfig<State: Clone>> SessionCallbacks<T> for BackrollStageC
 
 pub struct BackrollStage<T>
 where
-    T: BackrollConfig<State: Clone>,
+    T: BackrollConfig,
 {
     schedule: Schedule,
     run_criteria: Option<Box<dyn System<In = (), Out = ShouldRun>>>,
     run_criteria_initialized: bool,
-    input_sample_fn: Box<dyn SampleInputFn<T::Input>>,
-    save_world_fn: Box<dyn SaveWorldFn<T::State>>,
-    load_world_fn: Box<dyn LoadWorldFn<T::State>>,
+    input_sample_fn:
+        Box<dyn System<In = BackrollPlayerHandle, Out = T::Input> + Send + Sync + 'static>,
+    save_world_fn: Box<dyn System<In = (), Out = (T::State, Option<u64>)> + Send + Sync + 'static>,
+    load_world_fn: Box<dyn System<In = T::State, Out = ()> + Send + Sync + 'static>,
 }
 
-impl<T: BackrollConfig<State: Clone>> Stage for BackrollStage<T> {
+impl<T: BackrollConfig> Stage for BackrollStage<T> {
     fn run(&mut self, world: &mut World) {
         loop {
             let should_run = if let Some(ref mut run_criteria) = self.run_criteria {
@@ -96,6 +91,7 @@ impl<T: BackrollConfig<State: Clone>> Stage for BackrollStage<T> {
                     schedule: &mut self.schedule,
                     save_world_fn: self.save_world_fn.as_mut(),
                     load_world_fn: self.load_world_fn.as_mut(),
+                    data: Default::default(),
                 };
                 session.advance_frame(&mut callbacks);
             }

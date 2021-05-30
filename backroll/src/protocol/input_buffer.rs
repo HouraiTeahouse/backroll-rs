@@ -4,10 +4,9 @@ use parking_lot::RwLock;
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-#[derive(Default)]
 struct InputEncoderRef<T>
 where
-    T: Default + bytemuck::Pod,
+    T: bytemuck::Zeroable,
 {
     pending: VecDeque<FrameInput<T>>,
 
@@ -18,12 +17,23 @@ where
 /// A buffer of all inputs that have not been yet acknowledged by a connected remote peer.
 ///
 /// This struct wraps an Arc, so it's safe to make clones and pass it around.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub(super) struct InputEncoder<T>(Arc<RwLock<InputEncoderRef<T>>>)
 where
-    T: Default + bytemuck::Pod;
+    T: bytemuck::Zeroable + bytemuck::Pod;
 
-impl<T: Default + bytemuck::Pod> InputEncoder<T> {
+impl<T: bytemuck::Zeroable + bytemuck::Pod> Default for InputEncoder<T> {
+    fn default() -> Self {
+        Self(Arc::new(RwLock::new(InputEncoderRef::<T> {
+            pending: VecDeque::new(),
+
+            last_acked: Default::default(),
+            last_encoded: Default::default(),
+        })))
+    }
+}
+
+impl<T: bytemuck::Zeroable + bytemuck::Pod> InputEncoder<T> {
     /// Adds an input to as the latest element in the queue.
     pub fn push(&self, input: FrameInput<T>) {
         self.0.write().pending.push_front(input);
@@ -35,7 +45,7 @@ impl<T: Default + bytemuck::Pod> InputEncoder<T> {
     }
 }
 
-impl<T: Default + bytemuck::Pod + Clone> InputEncoder<T> {
+impl<T: bytemuck::Zeroable + bytemuck::Pod + Clone> InputEncoder<T> {
     /// Acknowledges a given frame. All inputs with of a prior frame will be dropped.
     ///
     /// This will update the reference input that is used to delta-encode.
@@ -73,10 +83,9 @@ impl<T: Default + bytemuck::Pod + Clone> InputEncoder<T> {
     }
 }
 
-#[derive(Default)]
 struct InputDecoderRef<T>
 where
-    T: Default + bytemuck::Pod,
+    T: bytemuck::Zeroable,
 {
     last_decoded: FrameInput<T>,
 }
@@ -84,12 +93,20 @@ where
 /// A stateful decoder that decodes delta patches created by `[InputEncoder]`.
 ///
 /// This struct wraps an Arc, so it's safe to make clones and pass it around.
-#[derive(Default, Clone)]
+#[derive(Clone)]
 pub(super) struct InputDecoder<T>(Arc<RwLock<InputDecoderRef<T>>>)
 where
-    T: Default + bytemuck::Pod;
+    T: bytemuck::Zeroable + bytemuck::Pod;
 
-impl<T: Default + bytemuck::Pod> InputDecoder<T> {
+impl<T: bytemuck::Zeroable + bytemuck::Pod> Default for InputDecoder<T> {
+    fn default() -> Self {
+        Self(Arc::new(RwLock::new(InputDecoderRef::<T> {
+            last_decoded: Default::default(),
+        })))
+    }
+}
+
+impl<T: bytemuck::Zeroable + bytemuck::Pod> InputDecoder<T> {
     /// Gets the frame of the most recently decoded input if available.
     ///
     /// If no input has been decoded yet, this will be the NULL_FRAME.
@@ -98,7 +115,7 @@ impl<T: Default + bytemuck::Pod> InputDecoder<T> {
     }
 }
 
-impl<T: Default + bytemuck::Pod + Clone> InputDecoder<T> {
+impl<T: bytemuck::Zeroable + bytemuck::Pod + Clone> InputDecoder<T> {
     /// Resets the internal state of the decoder to it's default.
     pub fn reset(&self) {
         self.0.write().last_decoded = Default::default();

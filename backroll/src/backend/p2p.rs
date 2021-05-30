@@ -1,6 +1,6 @@
 use super::{BackrollError, BackrollPlayer, BackrollPlayerHandle, BackrollResult};
 use crate::{
-    input::{FrameInput, GameInput},
+    input::FrameInput,
     is_null,
     protocol::{BackrollPeer, BackrollPeerConfig, ConnectionStatus, Event},
     sync::{self, BackrollSync},
@@ -82,19 +82,11 @@ impl<T: BackrollConfig> Player<T> {
     }
 
     pub fn is_remote_player(&self) -> bool {
-        if let Self::Remote { .. } = self {
-            true
-        } else {
-            false
-        }
+        matches!(self, Self::Remote { .. })
     }
 
     pub fn is_spectator(&self) -> bool {
-        if let Self::Spectator { .. } = self {
-            true
-        } else {
-            false
-        }
+        matches!(self, Self::Spectator { .. })
     }
 
     pub fn is_synchronized(&self) -> bool {
@@ -341,7 +333,7 @@ impl<T: BackrollConfig> P2PSessionRef<T> {
             }
             info!("min_frame = {}.", min_frame);
         }
-        return min_frame;
+        min_frame
     }
 
     fn poll_n_players(&mut self, callbacks: &mut impl SessionCallbacks<T>) -> Frame {
@@ -542,7 +534,7 @@ impl<T: BackrollConfig> P2PSession<T> {
         }
 
         let queue = session_ref.player_handle_to_queue(player)?;
-        let frame = session_ref.sync.add_local_input(queue, input.clone())?;
+        let frame = session_ref.sync.add_local_input(queue, input)?;
         if !is_null(frame) {
             for player in session_ref.players.iter_mut() {
                 player.send_input(FrameInput::<T::Input> { frame, input });
@@ -625,7 +617,7 @@ impl<T: BackrollConfig> P2PSession<T> {
         let queue = session_ref.player_handle_to_queue(player)?;
         Ok(session_ref.players[queue]
             .get_network_stats()
-            .unwrap_or_else(|| Default::default()))
+            .unwrap_or_else(Default::default))
     }
 
     /// Sets the frame delay for a given player.

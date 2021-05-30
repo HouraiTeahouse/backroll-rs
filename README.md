@@ -1,7 +1,7 @@
 # backroll-rs
 
 [![crates.io](https://img.shields.io/crates/v/backroll.svg)](https://crates.io/crates/backroll)
-[![Documentation](https://docs.rs/backroll/badge.svg)](https://docs.rs/backroll-transport)
+[![Documentation](https://docs.rs/backroll/badge.svg)](https://docs.rs/backroll)
 ![License](https://img.shields.io/crates/l/backroll-rs)
 [![Discord](https://img.shields.io/discord/151219753434742784.svg?label=&logo=discord&logoColor=ffffff&color=7389D8&labelColor=6A7EC2)](https://discord.gg/VuZhs9V)
 
@@ -9,9 +9,9 @@ Backroll is a pure Rust implementation of [GGPO](https://www.ggpo.net/)
 rollback networking library.
 
 ## Development Status
-This is still a heavy WIP. At time of writing, this very much is a direct port of
-GGPO's code from C++ to Rust. The API is subject to signifgant change in the
-future.
+This is still in an untested alpha stage. At time of writing, the public facing API 
+is largely stable, but a large portion of the functionality provided is still untested 
+in real games.
 
 ## Differences with the C++ implementation
 
@@ -29,9 +29,6 @@ future.
  * Multithreaded I/O - All network communications run within an async task pool.
    I/O polling is no longer manual, nor blocks your game's execution.
 
-## Planned features
- * Rust game engine integrations (bevy, amethyst, Piston, etc).
-
 ## Repository Structure
 This repo contains the following crates:
 
@@ -41,4 +38,4 @@ This repo contains the following crates:
  * backroll\_transport\_udp - A transport layer implementation using raw UDP
    sockets. 
  * bevy\_backroll - a integration plugin for [bevy](https://bevyengine.org/).
-   (Not started).
+   (In Progress, untested).

@@ -1,6 +1,6 @@
 use super::{BackrollError, BackrollPlayer, BackrollPlayerHandle, BackrollResult};
 use crate::{
-    input::{FrameInput, GameInput},
+    input::FrameInput,
     is_null,
     protocol::{BackrollPeer, BackrollPeerConfig, ConnectionStatus, Event},
     sync::{self, BackrollSync},

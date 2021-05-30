@@ -223,6 +223,7 @@ impl<T: BackrollConfig> BackrollSync<T> {
             state
                 .data
                 .as_deref()
+                .cloned()
                 .expect("Should not be loading unsaved frames"),
         );
 

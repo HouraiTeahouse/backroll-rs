@@ -55,7 +55,7 @@ pub trait BackrollConfig: 'static {
     /// The save state type for the session. This type must be safe to send across
     /// threads and have a 'static lifetime. This type is also responsible for
     /// dropping any internal linked state via the `[Drop]` trait.
-    type State: 'static + Send + Sync;
+    type State: 'static + Clone + Send + Sync;
 
     const MAX_PLAYERS_PER_MATCH: usize;
     const RECOMMENDATION_INTERVAL: u32;
@@ -75,7 +75,7 @@ where
     /// provided will be a previously saved state returned from the save_state function.  
     /// The client should make the current game state match the state contained in the
     /// argument.
-    fn load_state(&mut self, state: &T::State);
+    fn load_state(&mut self, state: T::State);
 
     /// Called during a rollback.  You should advance your game state by exactly one frame.  
     /// `inputs` will contain the inputs you should use for the given frame.

@@ -3,8 +3,6 @@ name = "bevy_backroll"
 version = "0.1.0"
 edition = "2018"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
 backroll = { path = "../backroll", version = "0.1" }
 bevy_ecs = "0.5"

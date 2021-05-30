@@ -22,7 +22,7 @@ struct TimeSyncRef<T> {
 #[derive(Clone)]
 pub struct TimeSync<T>(Arc<Mutex<TimeSyncRef<T>>>);
 
-impl<T: Default> Default for TimeSync<T> {
+impl<T: bytemuck::Pod> Default for TimeSync<T> {
     fn default() -> Self {
         Self(Arc::new(Mutex::new(TimeSyncRef {
             local: [0; FRAME_WINDOW_SIZE],

@@ -41,16 +41,12 @@ pub enum BackrollPlayer {
 
 impl BackrollPlayer {
     pub(crate) fn is_local(&self) -> bool {
-        if let Self::Local = self {
-            true
-        } else {
-            false
-        }
+        matches!(self, Self::Local)
     }
 }
 
 pub trait BackrollConfig: 'static {
-    type Input: Default + Eq + Clone + bytemuck::Pod + Send + Sync;
+    type Input: Eq + bytemuck::Pod + bytemuck::Zeroable + Send + Sync;
 
     /// The save state type for the session. This type must be safe to send across
     /// threads and have a 'static lifetime. This type is also responsible for

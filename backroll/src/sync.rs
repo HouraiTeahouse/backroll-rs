@@ -135,7 +135,7 @@ impl<T: BackrollConfig> BackrollSync<T> {
         self.save_current_frame(callbacks);
     }
 
-    pub fn add_local_input(&mut self, queue: usize, mut input: T::Input) -> BackrollResult<Frame> {
+    pub fn add_local_input(&mut self, queue: usize, input: T::Input) -> BackrollResult<Frame> {
         let frames_behind = self.frame_count - self.last_confirmed_frame;
         if self.frame_count >= MAX_PREDICTION_FRAMES as i32
             && frames_behind >= MAX_PREDICTION_FRAMES as i32
@@ -173,7 +173,7 @@ impl<T: BackrollConfig> BackrollSync<T> {
                     .unwrap()
                     .clone()
             };
-            output.inputs[idx] = input.input.clone();
+            output.inputs[idx] = input.input;
         }
         output
     }
@@ -186,7 +186,7 @@ impl<T: BackrollConfig> BackrollSync<T> {
             } else if let Some(confirmed) =
                 self.input_queues[idx].get_confirmed_input(self.frame_count())
             {
-                output.inputs[idx] = confirmed.input.clone();
+                output.inputs[idx] = confirmed.input;
             }
         }
         output

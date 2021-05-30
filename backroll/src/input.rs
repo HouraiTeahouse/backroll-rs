@@ -20,18 +20,18 @@ pub struct FrameInput<T> {
     pub input: T,
 }
 
-impl<T: Default> Default for FrameInput<T> {
+impl<T: bytemuck::Zeroable> Default for FrameInput<T> {
     fn default() -> Self {
         Self {
             frame: super::NULL_FRAME,
-            input: Default::default(),
+            input: T::zeroed(),
         }
     }
 }
 
-impl<T: Default> FrameInput<T> {
+impl<T: bytemuck::Zeroable> FrameInput<T> {
     pub fn clear(&mut self) {
-        self.input = Default::default();
+        self.input = T::zeroed();
     }
 }
 
@@ -42,17 +42,17 @@ pub struct GameInput<T> {
     pub(crate) inputs: [T; MAX_PLAYERS_PER_MATCH],
 }
 
-impl<T: Default> Default for GameInput<T> {
+impl<T: bytemuck::Zeroable> Default for GameInput<T> {
     fn default() -> Self {
         Self {
             frame: super::NULL_FRAME,
             disconnected: 0,
-            inputs: Default::default(),
+            inputs: unsafe { core::mem::zeroed() },
         }
     }
 }
 
-impl<T: Default> GameInput<T> {
+impl<T: bytemuck::Zeroable> GameInput<T> {
     /// Gets the input for a specific player. Returns [InvalidPlayer]
     /// if the provided player handle does not correspond to a valid player.
     ///
@@ -76,7 +76,7 @@ impl<T: Default> GameInput<T> {
     }
 
     pub(crate) fn clear(&mut self) {
-        self.inputs = Default::default();
+        self.inputs = unsafe { core::mem::zeroed() };
     }
 }
 
@@ -128,12 +128,16 @@ impl<T: BackrollConfig> InputQueue<T> {
         // than 32 without a Copy trait bound.
         //
         // SAFE: The entire buffer is initialized by the end of the for-loop.
+        // Assuming Zeroable is implemented correctly, this should also never
+        // panic, so a buffer will always correctly be allocated as a large
+        // zeroed buffer.
         let inputs: [FrameInput<T::Input>; MAX_ROLLBACK_FRAMES] = {
+            #[allow(clippy::uninit_assume_init)]
             let mut inputs: [FrameInput<T::Input>; MAX_ROLLBACK_FRAMES] =
                 unsafe { std::mem::MaybeUninit::uninit().assume_init() };
 
-            for idx in 0..MAX_ROLLBACK_FRAMES {
-                inputs[idx] = Default::default();
+            for input in inputs.iter_mut() {
+                *input = Default::default();
             }
 
             inputs

@@ -33,9 +33,11 @@ impl<'a, T: BackrollConfig> SessionCallbacks<T> for BackrollStageCallbacks<'a, T
     }
 
     fn advance_frame(&mut self, input: GameInput<T::Input>) {
-        self.world.insert_resource(input);
+        // Insert input via Resource
+        *self.world
+            .get_resource_mut::<GameInput<T::Input>>()
+            .unwrap() = input;
         self.schedule.run_once(self.world);
-        self.world.remove_resource::<GameInput<T::Input>>();
     }
 
     fn handle_event(&mut self, _: BackrollEvent) {
@@ -79,17 +81,21 @@ impl<T: BackrollConfig> Stage for BackrollStage<T> {
 
             for player_handle in session.local_players() {
                 let input = (self.input_sample_fn)(player_handle);
-                session.add_local_input(player_handle, input);
+                session.add_local_input(player_handle, input)
+                       .expect("Adding local input for local players shouldn't fail.")
             }
 
-            let mut callbacks = BackrollStageCallbacks::<T> {
-                world,
-                schedule: &mut self.schedule,
-                save_world_fn: self.save_world_fn.as_ref(),
-                load_world_fn: self.load_world_fn.as_ref(),
-            };
-
-            session.advance_frame(&mut callbacks);
+            world.insert_resource(GameInput::<T::Input>::default());
+            {
+                let mut callbacks = BackrollStageCallbacks::<T> {
+                    world,
+                    schedule: &mut self.schedule,
+                    save_world_fn: self.save_world_fn.as_ref(),
+                    load_world_fn: self.load_world_fn.as_ref(),
+                };
+                session.advance_frame(&mut callbacks);
+            }
+            world.remove_resource::<GameInput<T::Input>>();
 
             if let ShouldRun::Yes = should_run {
                 return;

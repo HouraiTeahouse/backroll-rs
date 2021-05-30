@@ -10,3 +10,6 @@ license = "ISC"
 [dependencies]
 async-channel = "1.6"
 dashmap = "4.0"
+
+[dev-dependencies]
+static_assertions = "1.1"

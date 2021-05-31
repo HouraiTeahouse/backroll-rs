@@ -156,8 +156,8 @@ mod test {
     #[test]
     #[serial_test::serial]
     pub fn test_basic_connect() {
-        const ADDR_A: &str = "127.0.0.1:1000";
-        const ADDR_B: &str = "127.0.0.1:1001";
+        const ADDR_A: &str = "127.0.0.1:10000";
+        const ADDR_B: &str = "127.0.0.1:10001";
         let pool = TaskPool::new();
 
         let socket_a = UdpManager::bind(pool.clone(), ADDR_A).unwrap();
@@ -182,8 +182,8 @@ mod test {
     #[test]
     #[serial_test::serial]
     pub fn test_multiple_send() {
-        const ADDR_A: &str = "127.0.0.1:1000";
-        const ADDR_B: &str = "127.0.0.1:1001";
+        const ADDR_A: &str = "127.0.0.1:10000";
+        const ADDR_B: &str = "127.0.0.1:10001";
         let pool = TaskPool::new();
 
         let socket_a = UdpManager::bind(pool.clone(), ADDR_A).unwrap();

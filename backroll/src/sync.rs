@@ -296,20 +296,3 @@ impl<T: BackrollConfig> BackrollSync<T> {
             .collect()
     }
 }
-
-//    void AdjustSimulation(int seek_to);
-
-//    bool CheckSimulationConsistency(int *seekTo);
-
-//    UdpMsg::connect_status *_local_connect_status;
-
-// bool
-// Sync::GetEvent(Event &e)
-// {
-//    if (_event_queue.size()) {
-//       e = _event_queue.front();
-//       _event_queue.pop();
-//       return true;
-//    }
-//    return false;
-// }

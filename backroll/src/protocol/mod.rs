@@ -20,6 +20,7 @@ use tracing::{debug, error, info};
 
 pub(crate) use event::Event;
 
+mod bitfield;
 mod compression;
 mod event;
 mod input_buffer;

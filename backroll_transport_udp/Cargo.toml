@@ -13,3 +13,7 @@ async-channel = "1.6"
 async-net = "1.6.0" 
 bevy_tasks = "0.5"
 tracing = "0.1"
+
+[dev-dependencies]
+futures = "0.3"
+serial_test = "0.5"

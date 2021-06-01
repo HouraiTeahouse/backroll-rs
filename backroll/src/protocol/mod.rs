@@ -217,6 +217,10 @@ impl<T: BackrollConfig> BackrollPeer<T> {
         let (deserialize_send, message_in) = async_channel::unbounded::<Message>();
         let (message_out, serialize_recv) = async_channel::unbounded::<MessageData>();
         let (events, events_rx) = async_channel::unbounded();
+        let peer_connect_status = local_connect_status
+            .iter()
+            .map(|status| status.read().clone())
+            .collect();
         let task_pool = config.task_pool.clone();
 
         let peer = Self {
@@ -227,7 +231,7 @@ impl<T: BackrollConfig> BackrollPeer<T> {
 
             stats: Default::default(),
             local_connect_status,
-            peer_connect_status: Default::default(),
+            peer_connect_status,
 
             input_encoder: Default::default(),
             input_decoder: Default::default(),

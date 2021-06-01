@@ -253,10 +253,7 @@ mod test {
     /// require('bitfield-rle').decode(Buffer.from([0])) // => <Buffer >
     /// ```
     fn test_encodes_empty_bitfield() {
-        assert_eq!(
-            decode(encode(vec![])).unwrap(),
-            vec![]
-        );
+        assert_eq!(decode(encode(vec![])).unwrap(), vec![]);
         assert_eq!(decode(vec![]).unwrap(), vec![]);
         assert_eq!(decode(vec![0]).unwrap(), vec![]);
         assert_eq!(encode(vec![]), vec![0]);

@@ -36,7 +36,7 @@ impl<T: bytemuck::Zeroable + bytemuck::Pod> Default for InputEncoder<T> {
 impl<T: bytemuck::Zeroable + bytemuck::Pod> InputEncoder<T> {
     /// Adds an input to as the latest element in the queue.
     pub fn push(&self, input: FrameInput<T>) {
-        self.0.write().pending.push_front(input);
+        self.0.write().pending.push_back(input);
     }
 
     /// Gets the frame of the last input that was encoded via `[encode]`.
@@ -72,10 +72,10 @@ impl<T: bytemuck::Zeroable + bytemuck::Pod + Clone> InputEncoder<T> {
         let mut queue = self.0.write();
         let pending = &queue.pending;
         if !pending.is_empty() {
-            let start_frame = pending.back().unwrap().frame;
+            let start_frame = pending.front().unwrap().frame;
             let inputs = pending.iter().map(|f| &f.input);
             let bits = compression::encode(&queue.last_acked.input, inputs)?;
-            queue.last_encoded = queue.pending.front().unwrap().clone();
+            queue.last_encoded = queue.pending.back().unwrap().clone();
             Ok((start_frame, bits))
         } else {
             Ok((0, Vec::new()))
@@ -137,10 +137,10 @@ impl<T: bytemuck::Zeroable + bytemuck::Pod + Clone> InputDecoder<T> {
             .into_iter()
             .enumerate()
             .map(|(i, input)| FrameInput::<T> {
-                frame: start_frame + i as i32,
+                frame: start_frame + i as Frame,
                 input,
             })
-            .filter(|input| input.frame > current_frame)
+            .skip_while(|input| input.frame <= current_frame)
             .collect::<Vec<_>>();
 
         if let Some(latest) = frame_inputs.last() {
@@ -150,5 +150,131 @@ impl<T: bytemuck::Zeroable + bytemuck::Pod + Clone> InputDecoder<T> {
         debug_assert!(decoder.last_decoded.frame >= last_decoded_frame);
 
         Ok(frame_inputs)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use bytemuck::{Pod, Zeroable};
+    use rand::RngCore;
+
+    #[repr(C)]
+    #[derive(Debug, Copy, Clone, PartialEq, Eq)]
+    struct Input {
+        x: i32,
+        y: i32,
+    }
+
+    unsafe impl Pod for Input {}
+    unsafe impl Zeroable for Input {}
+
+    #[test]
+    pub fn test_same_input_compresses_down() {
+        let encoder = InputEncoder::<Input>::default();
+        let decoder = InputDecoder::<Input>::default();
+        let mut buf: Vec<Input> = Vec::new();
+        for frame in 0..100 {
+            let input = Input { x: 420, y: 1337 };
+            buf.push(input);
+            encoder.push(FrameInput::<Input> { frame, input });
+        }
+
+        let (start, encoded) = encoder.encode().unwrap();
+        let decoded = decoder.decode(start, &encoded).unwrap();
+        assert_eq!(start, 0);
+        assert_eq!(encoded, vec![4, 164, 1, 9, 4, 57, 5, 233, 24]);
+        assert_eq!(
+            decoded.into_iter().map(|f| f.input).collect::<Vec<Input>>(),
+            buf
+        );
+        assert_eq!(decoder.last_decoded_frame(), 99);
+    }
+
+    #[test]
+    pub fn test_empty_buffer() {
+        let encoder = InputEncoder::<Input>::default();
+        let decoder = InputDecoder::<Input>::default();
+        let buf: Vec<Input> = Vec::new();
+
+        let (start, encoded) = encoder.encode().unwrap();
+        let decoded = decoder.decode(start, encoded.clone()).unwrap();
+        assert_eq!(start, 0);
+        assert_eq!(
+            decoded.into_iter().map(|f| f.input).collect::<Vec<Input>>(),
+            buf
+        );
+        assert_eq!(decoder.last_decoded_frame(), -1);
+    }
+
+    #[test]
+    pub fn test_encodes_the_same_until_acknowledged() {
+        let mut rng = rand::thread_rng();
+        let encoder = InputEncoder::<Input>::default();
+        let mut buf: Vec<Input> = Vec::new();
+        let base = Input {
+            x: rng.next_u32() as i32,
+            y: rng.next_u32() as i32,
+        };
+        for frame in 0..100 {
+            let input = if rng.next_u32() > u32::MAX / 4 {
+                base
+            } else {
+                Input {
+                    x: rng.next_u32() as i32,
+                    y: rng.next_u32() as i32,
+                }
+            };
+            buf.push(input);
+            encoder.push(FrameInput::<Input> { frame, input });
+        }
+
+        let (start_1, encoded_1) = encoder.encode().unwrap();
+        let (start_2, encoded_2) = encoder.encode().unwrap();
+        assert_eq!(start_1, start_2);
+        assert_eq!(encoded_1, encoded_2);
+        encoder.acknowledge_frame(53);
+        let (start_3, encoded_3) = encoder.encode().unwrap();
+        assert!(start_3 != start_1);
+        assert!(encoded_3 != encoded_1);
+        assert!(start_3 != start_2);
+        assert!(encoded_3 != encoded_2);
+    }
+
+    #[test]
+    pub fn test_random_data() {
+        let mut rng = rand::thread_rng();
+        for i in 0..100 {
+            let encoder = InputEncoder::<Input>::default();
+            let decoder = InputDecoder::<Input>::default();
+            let mut buf: Vec<Input> = Vec::new();
+            let base = Input {
+                x: rng.next_u32() as i32,
+                y: rng.next_u32() as i32,
+            };
+            for frame in 0..100 {
+                let input = if rng.next_u32() > u32::MAX / 4 {
+                    base
+                } else {
+                    Input {
+                        x: rng.next_u32() as i32,
+                        y: rng.next_u32() as i32,
+                    }
+                };
+                buf.push(input);
+                encoder.push(FrameInput::<Input> { frame, input });
+            }
+
+            let (start, encoded) = encoder.encode().unwrap();
+            let decoded = decoder.decode(start, &encoded).unwrap();
+            assert_eq!(start, 0);
+            assert!(encoded.len() <= std::mem::size_of::<Input>() * buf.len());
+            assert_eq!(decoded.len(), buf.len());
+            assert_eq!(decoder.last_decoded_frame(), 99);
+            assert_eq!(
+                decoded.into_iter().map(|f| f.input).collect::<Vec<Input>>(),
+                buf
+            );
+        }
     }
 }

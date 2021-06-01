@@ -1,6 +1,6 @@
+use super::bitfield;
 use bytemuck::Pod;
 use thiserror::Error;
-use super::bitfield;
 
 /// The maximum supported size of the raw buffer.
 const MAX_BUFFER_SIZE: usize = u16::MAX as usize;
@@ -110,8 +110,8 @@ impl From<bytemuck::PodCastError> for DecodeError {
 #[cfg(test)]
 mod test {
     use super::*;
-    use rand::RngCore;
     use bytemuck::{Pod, Zeroable};
+    use rand::RngCore;
 
     #[repr(C)]
     #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -126,15 +126,9 @@ mod test {
     #[test]
     pub fn test_same_input_compresses_down() {
         let mut buf: Vec<Input> = Vec::new();
-        let base = Input {
-            x: 120,
-            y: 120,
-        };
+        let base = Input { x: 120, y: 120 };
         for _ in 0..100 {
-            buf.push(Input {
-                x: 420,
-                y: 1337,
-            });
+            buf.push(Input { x: 420, y: 1337 });
         }
 
         let encoded = encode(&base, buf.iter()).unwrap();
@@ -146,10 +140,7 @@ mod test {
     #[test]
     pub fn test_empty_buffer() {
         let buf: Vec<Input> = Vec::new();
-        let base = Input {
-            x: 120,
-            y: 120,
-        };
+        let base = Input { x: 120, y: 120 };
 
         let encoded = encode(&base, buf.iter()).unwrap();
         let decoded = decode(&base, encoded.iter()).unwrap();

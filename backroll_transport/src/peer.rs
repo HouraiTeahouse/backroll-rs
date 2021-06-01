@@ -1,4 +1,5 @@
 use super::channel::BidirectionalAsyncChannel;
+use std::fmt;
 use std::ops::Deref;
 
 /// A bidirectional channel for binary messages.
@@ -18,6 +19,12 @@ impl Peer {
     pub fn create_bounded_pair(capacity: usize) -> (Self, Self) {
         let (a, b) = BidirectionalAsyncChannel::create_bounded_pair(capacity);
         (Self(a), Self(b))
+    }
+}
+
+impl fmt::Debug for Peer {
+    fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+        write!(f, "Peer {{ connected: {} }}", self.is_connected())
     }
 }
 

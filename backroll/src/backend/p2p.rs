@@ -253,11 +253,15 @@ impl<T: Config> P2PSessionRef<T> {
         player: PlayerHandle,
     ) -> BackrollResult<()> {
         let queue = self.player_handle_to_queue(player)?;
-        if self.local_connect_status[queue].read().disconnected {
+        let (last_frame, disconnected) = {
+            let status = self.local_connect_status[queue].read();
+            (status.last_frame, status.disconnected)
+        };
+
+        if disconnected {
             return Err(BackrollError::PlayerDisconnected(player));
         }
 
-        let last_frame = self.local_connect_status[queue].read().last_frame;
         if self.players[queue].is_local() {
             // The player is local. This should disconnect the local player from the rest
             // of the game. All other players need to be disconnected.
@@ -293,7 +297,7 @@ impl<T: Config> P2PSessionRef<T> {
         self.players[queue].disconnect();
 
         info!("Changing queue {} local connect status for last frame from {} to {} on disconnect request (current: {}).",
-         queue, self.local_connect_status[queue].read().last_frame, syncto, frame_count);
+               queue, self.local_connect_status[queue].read().last_frame, syncto, frame_count);
 
         {
             let mut status = self.local_connect_status[queue].write();

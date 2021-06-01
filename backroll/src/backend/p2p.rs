@@ -7,10 +7,11 @@ use crate::{
     transport::Peer,
     BackrollConfig, BackrollEvent, Frame, NetworkStats, SessionCallbacks, TaskPool,
 };
+use async_channel::TryRecvError;
 use parking_lot::RwLock;
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::info;
+use tracing::{debug, info};
 
 const RECOMMENDATION_INTERVAL: Frame = 240;
 const DEFAULT_DISCONNECT_TIMEOUT: Duration = Duration::from_millis(5000);
@@ -29,6 +30,22 @@ where
         peer: BackrollPeer<T>,
         rx: async_channel::Receiver<Event<T::Input>>,
     },
+}
+
+impl<T: BackrollConfig> Clone for Player<T> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Local => Self::Local,
+            Self::Remote { peer, rx } => Self::Remote {
+                peer: peer.clone(),
+                rx: rx.clone(),
+            },
+            Self::Spectator { peer, rx } => Self::Spectator {
+                peer: peer.clone(),
+                rx: rx.clone(),
+            },
+        }
+    }
 }
 
 impl<T: BackrollConfig> Player<T> {
@@ -221,6 +238,41 @@ impl<T: BackrollConfig> P2PSessionRef<T> {
         }
     }
 
+    fn disconnect_player(
+        &mut self,
+        callbacks: &mut impl SessionCallbacks<T>,
+        player: BackrollPlayerHandle,
+    ) -> BackrollResult<()> {
+        let queue = self.player_handle_to_queue(player)?;
+        if self.local_connect_status[queue].read().disconnected {
+            return Err(BackrollError::PlayerDisconnected(player));
+        }
+
+        let last_frame = self.local_connect_status[queue].read().last_frame;
+        if self.players[queue].is_local() {
+            // The player is local. This should disconnect the local player from the rest
+            // of the game. All other players need to be disconnected.
+            // that if the endpoint is not initalized, this must be the local player.
+            let current_frame = self.sync.frame_count();
+            info!(
+                "Disconnecting local player {} at frame {} by user request.",
+                queue, last_frame
+            );
+            for i in 0..self.players.len() {
+                if !self.players[i].is_local() {
+                    self.disconnect_player_queue(callbacks, i, current_frame);
+                }
+            }
+        } else {
+            info!(
+                "Disconnecting queue {} at frame {} by user request.",
+                queue, last_frame
+            );
+            self.disconnect_player_queue(callbacks, queue, last_frame);
+        }
+        Ok(())
+    }
+
     fn disconnect_player_queue(
         &mut self,
         callbacks: &mut impl SessionCallbacks<T>,
@@ -254,11 +306,97 @@ impl<T: BackrollConfig> P2PSessionRef<T> {
         self.check_initial_sync(callbacks);
     }
 
+    fn flush_events(&mut self, callbacks: &mut impl SessionCallbacks<T>) {
+        for (queue, player) in self.players.clone().iter().enumerate() {
+            if let Player::<T>::Remote { rx, .. } = player {
+                self.flush_peer_events(callbacks, queue, rx.clone());
+            }
+        }
+    }
+
+    fn flush_peer_events(
+        &mut self,
+        callbacks: &mut impl SessionCallbacks<T>,
+        queue: usize,
+        rx: async_channel::Receiver<Event<T::Input>>,
+    ) {
+        loop {
+            match rx.try_recv() {
+                Ok(evt) => self.handle_event(callbacks, queue, evt),
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Closed) => {
+                    self.disconnect_player(callbacks, BackrollPlayerHandle(queue))
+                        .expect("Disconnecting should not error on closing connection");
+                    break;
+                }
+            }
+        }
+    }
+
+    fn handle_event(
+        &mut self,
+        callbacks: &mut impl SessionCallbacks<T>,
+        queue: usize,
+        evt: Event<T::Input>,
+    ) {
+        let player = BackrollPlayerHandle(queue);
+        match evt {
+            Event::<T::Input>::Connected => {
+                callbacks.handle_event(BackrollEvent::Connected(BackrollPlayerHandle(queue)));
+            }
+            Event::<T::Input>::Synchronizing { total, count } => {
+                callbacks.handle_event(BackrollEvent::Synchronizing {
+                    player,
+                    total,
+                    count,
+                });
+            }
+            Event::<T::Input>::Inputs(inputs) => {
+                let mut status = self.local_connect_status[queue].write();
+                if status.disconnected {
+                    return;
+                }
+
+                for input in inputs {
+                    let current_remote_frame = status.last_frame;
+                    let new_remote_frame = input.frame;
+                    debug_assert!(
+                        crate::is_null(current_remote_frame)
+                            || new_remote_frame == (current_remote_frame + 1)
+                    );
+                    self.sync.add_remote_input(queue, input);
+
+                    // Notify the other endpoints which frame we received from a peer
+                    debug!(
+                        "setting remote connect status for queue {} to {}",
+                        queue, new_remote_frame
+                    );
+
+                    status.last_frame = new_remote_frame;
+                }
+            }
+            Event::<T::Input>::Synchronized => {
+                callbacks.handle_event(BackrollEvent::Synchronized(player));
+                self.check_initial_sync(callbacks);
+            }
+            Event::<T::Input>::NetworkInterrupted { disconnect_timeout } => {
+                callbacks.handle_event(BackrollEvent::ConnectionInterrupted {
+                    player,
+                    disconnect_timeout,
+                });
+            }
+            Event::<T::Input>::NetworkResumed => {
+                callbacks.handle_event(BackrollEvent::Synchronized(player));
+            }
+        }
+    }
+
     fn do_poll(&mut self, callbacks: &mut impl SessionCallbacks<T>) {
         if self.sync.in_rollback() || self.synchronizing {
             return;
         }
 
+        self.flush_events(callbacks);
         self.sync.check_simulation(callbacks);
 
         // notify all of our endpoints of their local frame number for their

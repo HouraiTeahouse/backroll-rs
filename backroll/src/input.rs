@@ -1,6 +1,5 @@
 use crate::{
-    Config, BackrollError, PlayerHandle, Frame, MAX_PLAYERS_PER_MATCH,
-    MAX_ROLLBACK_FRAMES,
+    BackrollError, Config, Frame, PlayerHandle, MAX_PLAYERS_PER_MATCH, MAX_ROLLBACK_FRAMES,
 };
 use std::convert::TryFrom;
 use tracing::info;

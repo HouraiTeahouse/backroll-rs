@@ -1,8 +1,8 @@
-use super::{BackrollError, Player, PlayerHandle, BackrollResult};
+use super::{BackrollError, BackrollResult, Player, PlayerHandle};
 use crate::{
     input::FrameInput,
     is_null,
-    protocol::{Peer, PeerConfig, ConnectionStatus, Event as ProtocolEvent},
+    protocol::{ConnectionStatus, Event as ProtocolEvent, Peer, PeerConfig},
     sync::{self, Sync},
     transport::Peer as TransportPeer,
     Config, Event, Frame, NetworkStats, SessionCallbacks, TaskPool,
@@ -139,6 +139,15 @@ where
     disconnect_timeout: Duration,
     disconnect_notify_start: Duration,
     marker_: std::marker::PhantomData<T>,
+}
+
+impl<T> Default for P2PSessionBuilder<T>
+where
+    T: Config,
+{
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<T> P2PSessionBuilder<T>
@@ -528,7 +537,7 @@ impl<T: Config> P2PSessionRef<T> {
             }
             info!("min_frame = {}.", min_frame);
         }
-        return min_frame;
+        min_frame
     }
 
     fn is_synchronized(&self) -> bool {
@@ -668,11 +677,7 @@ impl<T: Config> P2PSession<T> {
     ///
     /// [BackrollError]: crate::BackrollError
     /// [advance_frame]: self::P2PSession::advance_frame
-    pub fn add_local_input(
-        &self,
-        player: PlayerHandle,
-        input: T::Input,
-    ) -> BackrollResult<()> {
+    pub fn add_local_input(&self, player: PlayerHandle, input: T::Input) -> BackrollResult<()> {
         let mut session_ref = self.0.write();
         if session_ref.sync.in_rollback() {
             return Err(BackrollError::InRollback);
@@ -773,11 +778,7 @@ impl<T: Config> P2PSession<T> {
     /// # Errors
     /// Returns [BackrollError::InvalidPlayer] if the provided player handle does not point a vali
     /// player.
-    pub fn set_frame_delay(
-        &self,
-        player: PlayerHandle,
-        delay: Frame,
-    ) -> BackrollResult<()> {
+    pub fn set_frame_delay(&self, player: PlayerHandle, delay: Frame) -> BackrollResult<()> {
         let mut session_ref = self.0.write();
         let queue = session_ref.player_handle_to_queue(player)?;
         session_ref.sync.set_frame_delay(queue, delay);

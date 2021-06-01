@@ -1,7 +1,7 @@
 use crate::{
     input::{FrameInput, GameInput, InputQueue},
     protocol::ConnectionStatus,
-    Config, BackrollError, BackrollResult, Frame, SessionCallbacks, NULL_FRAME,
+    BackrollError, BackrollResult, Config, Frame, SessionCallbacks, NULL_FRAME,
 };
 use parking_lot::RwLock;
 use std::sync::Arc;
@@ -86,7 +86,10 @@ where
 }
 
 impl<T: Config> Sync<T> {
-    pub fn new(config: PlayerConfig, local_connect_status: Arc<[RwLock<ConnectionStatus>]>) -> Self {
+    pub fn new(
+        config: PlayerConfig,
+        local_connect_status: Arc<[RwLock<ConnectionStatus>]>,
+    ) -> Self {
         let input_queues = Self::create_queues(&config);
         Self {
             saved_state: Default::default(),

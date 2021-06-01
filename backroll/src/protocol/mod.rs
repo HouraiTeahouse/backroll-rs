@@ -83,27 +83,15 @@ impl PeerState {
     }
 
     pub fn is_running(&self) -> bool {
-        match self {
-            Self::Running { .. } => true,
-            Self::Interrupted { .. } => true,
-            _ => false,
-        }
+        matches!(self, Self::Running { .. } | Self::Interrupted { .. })
     }
 
     pub fn is_disconnected(&self) -> bool {
-        if let Self::Disconnected = self {
-            true
-        } else {
-            false
-        }
+        matches!(self, Self::Disconnected)
     }
 
     pub fn is_interrupted(&self) -> bool {
-        if let Self::Interrupted { .. } = self {
-            true
-        } else {
-            false
-        }
+        matches!(self, Self::Interrupted { .. })
     }
 
     pub fn start_syncing(&mut self, round_trips: u8) {
@@ -685,10 +673,10 @@ impl<T: Config> Peer<T> {
                 }
                 Ok(())
             }
-            PeerState::Running { remote_magic } if magic == remote_magic => return Ok(()),
+            PeerState::Running { remote_magic } if magic == remote_magic => Ok(()),
             _ => {
                 info!("Ignoring SyncReply while not syncing.");
-                return Err(PeerError::InvalidMessage);
+                Err(PeerError::InvalidMessage)
             }
         }
     }

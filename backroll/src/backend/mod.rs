@@ -1,4 +1,4 @@
-use super::{BackrollError, Player, PlayerHandle, BackrollResult};
+use super::{BackrollError, BackrollResult, Player, PlayerHandle};
 
 mod p2p;
 mod sync_test;

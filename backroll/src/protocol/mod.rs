@@ -90,12 +90,16 @@ impl PeerState {
         }
     }
 
-    pub fn is_disconnected(&self) -> bool {
-        if let Self::Disconnected = self {
-            true
+    fn create_sync_request(&self) -> SyncRequest {
+        if let PeerState::Connecting { random, .. } | PeerState::Syncing { random, .. } = self {
+            SyncRequest { random: *random }
         } else {
-            false
+            panic!("Sending sync request while not syncing.")
         }
+    }
+
+    pub fn is_disconnected(&self) -> bool {
+        matches!(self, Self::Disconnected)
     }
 
     pub fn is_interrupted(&self) -> bool {
@@ -332,12 +336,6 @@ impl<T: BackrollConfig> BackrollPeer<T> {
         })
     }
 
-    pub fn send_input_ack(&self) -> Result<(), PeerError> {
-        self.send(InputAck {
-            ack_frame: self.input_decoder.last_decoded_frame(),
-        })
-    }
-
     async fn heartbeat(self, interval: Duration) {
         while let Ok(()) = self.send(MessageData::KeepAlive) {
             debug!("Sent keep alive packet");
@@ -438,7 +436,8 @@ impl<T: BackrollConfig> BackrollPeer<T> {
     }
 
     fn poll(&mut self) -> Result<(), PeerError> {
-        let next_interval = match *self.state.read() {
+        let state = self.state.read();
+        let next_interval = match *state {
             PeerState::Connecting { .. } => SYNC_FIRST_RETRY_INTERVAL,
             PeerState::Syncing { .. } => SYNC_RETRY_INTERVAL,
             _ => return Ok(()),
@@ -450,12 +449,12 @@ impl<T: BackrollConfig> BackrollPeer<T> {
                     "No luck syncing after {:?} ms... Re-queueing sync packet.",
                     next_interval
                 );
-                self.send_sync_request()?;
+                self.send(state.create_sync_request())?;
             }
         } else {
-            // If we have not sent anything yet, kick off the connection with a 
+            // If we have not sent anything yet, kick off the connection with a
             // sync request.
-            self.send_sync_request()?;
+            self.send(state.create_sync_request())?;
         }
 
         Ok(())
@@ -564,14 +563,6 @@ impl<T: BackrollConfig> BackrollPeer<T> {
                 self.stats.write().round_trip_time = UnixMillis::now() - data.pong;
                 Ok(())
             }
-        }
-    }
-
-    fn send_sync_request(&self) -> Result<(), PeerError> {
-        if let PeerState::Connecting { random, .. } | PeerState::Syncing { random, .. } = *self.state.read() {
-            self.send(SyncRequest { random })
-        } else {
-            panic!("Sending sync request while not syncing.")
         }
     }
 
@@ -684,7 +675,7 @@ impl<T: BackrollConfig> BackrollPeer<T> {
                         total: NUM_SYNC_PACKETS,
                         count: NUM_SYNC_PACKETS - *roundtrips_remaining as u8,
                     })?;
-                    self.send_sync_request()?;
+                    self.send(state.create_sync_request())?;
                 }
                 Ok(())
             }
@@ -725,7 +716,9 @@ impl<T: BackrollConfig> BackrollPeer<T> {
                 if !inputs.is_empty() {
                     self.push_event(Event::<T::Input>::Inputs(inputs))?;
                     self.stats.write().last_input_packet_recv_time = UnixMillis::now();
-                    self.send_input_ack()?;
+                    self.send(InputAck {
+                        ack_frame: self.input_decoder.last_decoded_frame(),
+                    })?;
                 }
             }
             Err(err) => {

@@ -1,6 +1,6 @@
 use super::channel::BidirectionalAsyncChannel;
-use std::ops::Deref;
 use std::fmt;
+use std::ops::Deref;
 
 /// A bidirectional channel for binary messages.
 #[derive(Clone)]

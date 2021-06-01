@@ -178,15 +178,15 @@ impl<T: BackrollConfig> BackrollSync<T> {
         output
     }
 
-    pub fn synchronize_inputs(&self) -> GameInput<T::Input> {
+    pub fn synchronize_inputs(&mut self) -> GameInput<T::Input> {
         let mut output: GameInput<T::Input> = Default::default();
         for idx in 0..self.config.player_count {
             if self.is_disconnected(idx) {
                 output.disconnected |= 1 << idx;
-            } else if let Some(confirmed) =
-                self.input_queues[idx].get_confirmed_input(self.frame_count())
-            {
-                output.inputs[idx] = confirmed.input;
+            } else {
+                let frame_count = self.frame_count();
+                let confirmed = self.input_queues[idx].get_input(frame_count);
+                output.inputs[idx] = confirmed.unwrap().input;
             }
         }
         output

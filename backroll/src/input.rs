@@ -180,6 +180,7 @@ impl<T: BackrollConfig> InputQueue<T> {
         );
         if frame >= self.last_added_frame {
             self.tail = self.head;
+            self.length = 0;
         } else {
             let offset = frame - self.inputs[self.tail].frame + 1;
             let offset = usize::try_from(offset).unwrap();

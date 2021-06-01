@@ -268,7 +268,15 @@ impl<T: BackrollConfig> P2PSessionRef<T> {
             player.set_local_frame_number(current_frame);
         }
 
-        let min_frame = if self.players().count() <= 2 {
+        let remote_player_count = self
+            .players
+            .iter()
+            .filter(|player| !player.is_local())
+            .count();
+
+        let min_frame = if remote_player_count == 0 {
+            current_frame
+        } else if self.players().count() <= 2 {
             self.poll_2_players(callbacks)
         } else {
             self.poll_n_players(callbacks)
@@ -421,7 +429,9 @@ impl<T: BackrollConfig> P2PSession<T> {
             .iter()
             .filter(|player| player.is_local())
             .count();
-        if local_player_count > 1 {
+        let remote_player_count = builder.players.len() - local_player_count;
+
+        if local_player_count > 1 && remote_player_count > 1 {
             return Err(BackrollError::MultipleLocalPlayers);
         }
         let player_count = builder.players.len();

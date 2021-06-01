@@ -392,7 +392,7 @@ impl<T: BackrollConfig> P2PSessionRef<T> {
     }
 
     fn do_poll(&mut self, callbacks: &mut impl SessionCallbacks<T>) {
-        if self.sync.in_rollback() || self.synchronizing {
+        if self.sync.in_rollback() {
             return;
         }
 

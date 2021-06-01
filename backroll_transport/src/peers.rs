@@ -7,6 +7,7 @@ use dashmap::DashMap;
 /// Dropping will disconnect all owned peers.
 ///
 /// [Peer]: crate::Peer
+#[derive(Debug)]
 pub struct Peers<T>(DashMap<T, Peer>)
 where
     T: Eq + Hash;

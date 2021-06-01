@@ -1,6 +1,4 @@
-use backroll::{
-    Config, Event, PlayerHandle, GameInput, P2PSession, SessionCallbacks,
-};
+use backroll::{Config, Event, GameInput, P2PSession, PlayerHandle, SessionCallbacks};
 use bevy_ecs::{
     schedule::{Schedule, ShouldRun, Stage},
     system::System,
@@ -51,8 +49,7 @@ where
     schedule: Schedule,
     run_criteria: Option<Box<dyn System<In = (), Out = ShouldRun>>>,
     run_criteria_initialized: bool,
-    input_sample_fn:
-        Box<dyn System<In = PlayerHandle, Out = T::Input> + Send + Sync + 'static>,
+    input_sample_fn: Box<dyn System<In = PlayerHandle, Out = T::Input> + Send + Sync + 'static>,
     save_world_fn: Box<dyn System<In = (), Out = (T::State, Option<u64>)> + Send + Sync + 'static>,
     load_world_fn: Box<dyn System<In = T::State, Out = ()> + Send + Sync + 'static>,
 }

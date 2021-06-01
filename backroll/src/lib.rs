@@ -79,7 +79,7 @@ where
 
     ///  Notification that something has happened. See the `[BackcrollEvent]`
     /// struct for more information.
-    fn handle_event(&mut self, event: BackrollEvent);
+    fn handle_event(&mut self, event: Event);
 }
 
 #[derive(Clone, Debug, Error)]

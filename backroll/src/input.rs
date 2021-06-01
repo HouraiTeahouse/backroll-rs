@@ -1,5 +1,5 @@
 use crate::{
-    BackrollConfig, BackrollError, BackrollPlayerHandle, Frame, MAX_PLAYERS_PER_MATCH,
+    Config, BackrollError, PlayerHandle, Frame, MAX_PLAYERS_PER_MATCH,
     MAX_ROLLBACK_FRAMES,
 };
 use std::convert::TryFrom;
@@ -57,7 +57,7 @@ impl<T: bytemuck::Zeroable> GameInput<T> {
     /// if the provided player handle does not correspond to a valid player.
     ///
     /// [InvalidPlayer]: crate::BackrollError::InvalidPlayer
-    pub fn get(&self, player: BackrollPlayerHandle) -> Result<&T, BackrollError> {
+    pub fn get(&self, player: PlayerHandle) -> Result<&T, BackrollError> {
         if player.0 >= MAX_PLAYERS_PER_MATCH {
             return Err(BackrollError::InvalidPlayer(player));
         }
@@ -68,7 +68,7 @@ impl<T: bytemuck::Zeroable> GameInput<T> {
     /// if the provided player handle does not correspond to a valid player.
     ///
     /// [InvalidPlayer]: crate::BackrollError::InvalidPlayer
-    pub fn is_disconnected(&self, player: BackrollPlayerHandle) -> Result<bool, BackrollError> {
+    pub fn is_disconnected(&self, player: PlayerHandle) -> Result<bool, BackrollError> {
         if player.0 >= MAX_PLAYERS_PER_MATCH {
             return Err(BackrollError::InvalidPlayer(player));
         }
@@ -100,7 +100,7 @@ impl<T> FetchedInput<T> {
 
 pub struct InputQueue<T>
 where
-    T: BackrollConfig,
+    T: Config,
 {
     head: usize,
     tail: usize,
@@ -118,7 +118,7 @@ where
     prediction: FrameInput<T::Input>,
 }
 
-impl<T: BackrollConfig> InputQueue<T> {
+impl<T: Config> InputQueue<T> {
     #[allow(clippy::uninit_assumed_init)]
     pub fn new() -> Self {
         // This is necessary as Default is not defined on arrays of more

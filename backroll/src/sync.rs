@@ -290,7 +290,7 @@ impl<T: Config> Sync<T> {
         status.disconnected && status.last_frame < self.frame_count()
     }
 
-    fn create_queues(config: &Config) -> Vec<InputQueue<T>> {
+    fn create_queues(config: &PlayerConfig) -> Vec<InputQueue<T>> {
         (0..config.player_count)
             .map(|_| InputQueue::new())
             .collect()

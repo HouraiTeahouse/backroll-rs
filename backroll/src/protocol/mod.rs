@@ -6,7 +6,7 @@ use crate::{
     Config, Frame, NetworkStats, TaskPool,
 };
 use async_channel::TrySendError;
-use backroll_transport::Peer;
+use backroll_transport::Peer as TransportPeer;
 use bincode::config::Options;
 use futures::FutureExt;
 use futures_timer::Delay;
@@ -155,7 +155,7 @@ struct PeerStats {
 
 #[derive(Clone)]
 pub(crate) struct PeerConfig {
-    pub peer: Peer,
+    pub peer: TransportPeer,
     pub disconnect_timeout: Duration,
     pub disconnect_notify_start: Duration,
     pub task_pool: TaskPool,

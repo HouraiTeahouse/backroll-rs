@@ -709,7 +709,10 @@ impl<T: Config> P2PSession<T> {
             // confirmed local frame for this player.  this must come first so it
             // gets incorporated into the next packet we send.
 
-            debug!("setting local connect status for local queue {} to {}", queue, frame);
+            debug!(
+                "setting local connect status for local queue {} to {}",
+                queue, frame
+            );
             session_ref.local_connect_status[queue].write().last_frame = frame;
 
             for player in session_ref.players.iter_mut() {

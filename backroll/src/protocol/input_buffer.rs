@@ -199,7 +199,7 @@ mod test {
 
         let (start, encoded) = encoder.encode().unwrap();
         let decoded = decoder.decode(start, encoded.clone()).unwrap();
-        assert_eq!(start, 0);
+        assert_eq!(start, -1);
         assert_eq!(
             decoded.into_iter().map(|f| f.input).collect::<Vec<Input>>(),
             buf

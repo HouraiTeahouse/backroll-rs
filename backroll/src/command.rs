@@ -3,7 +3,7 @@ use crate::{
     sync::{SavedCell, SavedFrame},
     Config, Event, Frame,
 };
-use tracing::{debug, info};
+use tracing::info;
 
 pub enum Command<T>
 where
@@ -43,17 +43,13 @@ where
 }
 
 impl<T: Config> SaveState<T> {
-    pub(crate) fn new(cell: SavedCell<T>, frame: Frame) -> Self {
-        Self { cell, frame }
-    }
-
     /// Saves a single frame's state to the session's state buffer.
     ///
     /// Note this consumes the SaveState, saving multiple times is
     /// not allowed.
-    pub fn save(mut self, state: T::State, checksum: Option<u64>) {
+    pub fn save(self, state: T::State, checksum: Option<u64>) {
         info!(
-            "=== Saved frame info {} (checksum: {:08x}).",
+            "=== Saved frame state {} (checksum: {:08x}).",
             self.frame,
             checksum.unwrap_or(0)
         );
@@ -93,5 +89,34 @@ impl<T: Config> LoadState<T> {
     /// not allowed.
     pub fn load(self) -> T::State {
         self.cell.load()
+    }
+}
+
+pub struct Commands<T>
+where
+    T: Config,
+{
+    commands: Vec<Command<T>>,
+}
+
+impl<T: Config> Commands<T> {
+    pub(crate) fn push(&mut self, command: Command<T>) {
+        self.commands.push(command);
+    }
+}
+
+impl<T: Config> Default for Commands<T> {
+    fn default() -> Self {
+        Self {
+            commands: Vec::new(),
+        }
+    }
+}
+
+impl<T: Config> IntoIterator for Commands<T> {
+    type Item = Command<T>;
+    type IntoIter = std::vec::IntoIter<Command<T>>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.commands.into_iter()
     }
 }

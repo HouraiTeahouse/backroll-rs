@@ -1,5 +1,6 @@
 use super::{BackrollError, BackrollResult, Player, PlayerHandle};
 use crate::{
+    command::Commands,
     input::FrameInput,
     is_null,
     protocol::{ConnectionStatus, Event as ProtocolEvent, Peer, PeerConfig},
@@ -240,7 +241,7 @@ impl<T: Config> P2PSessionRef<T> {
         Ok(offset)
     }
 
-    fn check_initial_sync(&mut self, commands: &mut Vec<Command<T>>) {
+    fn check_initial_sync(&mut self, commands: &mut Commands<T>) {
         if self.synchronizing && self.is_synchronized() {
             commands.push(Command::Event(Event::Running));
             self.synchronizing = false;
@@ -249,7 +250,7 @@ impl<T: Config> P2PSessionRef<T> {
 
     fn disconnect_player(
         &mut self,
-        commands: &mut Vec<Command<T>>,
+        commands: &mut Commands<T>,
         player: PlayerHandle,
     ) -> BackrollResult<()> {
         let queue = self.player_handle_to_queue(player)?;
@@ -286,12 +287,7 @@ impl<T: Config> P2PSessionRef<T> {
         Ok(())
     }
 
-    fn disconnect_player_queue(
-        &mut self,
-        commands: &mut Vec<Command<T>>,
-        queue: usize,
-        syncto: Frame,
-    ) {
+    fn disconnect_player_queue(&mut self, commands: &mut Commands<T>, queue: usize, syncto: Frame) {
         let frame_count = self.sync.frame_count();
 
         self.players[queue].disconnect();
@@ -319,7 +315,7 @@ impl<T: Config> P2PSessionRef<T> {
         self.check_initial_sync(commands);
     }
 
-    fn flush_events(&mut self, commands: &mut Vec<Command<T>>) {
+    fn flush_events(&mut self, commands: &mut Commands<T>) {
         for (queue, player) in self.players.clone().iter().enumerate() {
             if let PlayerType::<T>::Remote { rx, .. } = player {
                 self.flush_peer_events(commands, queue, rx.clone());
@@ -329,7 +325,7 @@ impl<T: Config> P2PSessionRef<T> {
 
     fn flush_peer_events(
         &mut self,
-        commands: &mut Vec<Command<T>>,
+        commands: &mut Commands<T>,
         queue: usize,
         rx: async_channel::Receiver<ProtocolEvent<T::Input>>,
     ) {
@@ -348,7 +344,7 @@ impl<T: Config> P2PSessionRef<T> {
 
     fn handle_event(
         &mut self,
-        commands: &mut Vec<Command<T>>,
+        commands: &mut Commands<T>,
         queue: usize,
         evt: ProtocolEvent<T::Input>,
     ) {
@@ -404,7 +400,7 @@ impl<T: Config> P2PSessionRef<T> {
         }
     }
 
-    fn do_poll(&mut self, commands: &mut Vec<Command<T>>) {
+    fn do_poll(&mut self, commands: &mut Commands<T>) {
         if self.sync.in_rollback() {
             return;
         }
@@ -472,7 +468,7 @@ impl<T: Config> P2PSessionRef<T> {
         }
     }
 
-    fn poll_2_players(&mut self, commands: &mut Vec<Command<T>>) -> Frame {
+    fn poll_2_players(&mut self, commands: &mut Commands<T>) -> Frame {
         // discard confirmed frames as appropriate
         let mut min_frame = Frame::MAX;
         for i in 0..self.players.len() {
@@ -500,7 +496,7 @@ impl<T: Config> P2PSessionRef<T> {
         min_frame
     }
 
-    fn poll_n_players(&mut self, commands: &mut Vec<Command<T>>) -> Frame {
+    fn poll_n_players(&mut self, commands: &mut Commands<T>) -> Frame {
         // discard confirmed frames as appropriate
         let mut min_frame = Frame::MAX;
         for queue in 0..self.players.len() {
@@ -733,9 +729,9 @@ impl<T: Config> P2PSession<T> {
     ///
     /// [SessionCallbacks]: crate::SessionCallbacks
     /// [add_local_input]: self::P2PSession::add_local_input
-    pub fn advance_frame(&self) -> Vec<Command<T>> {
+    pub fn advance_frame(&self) -> Commands<T> {
         let mut session_ref = self.0.write();
-        let mut commands = Vec::new();
+        let mut commands = Commands::<T>::default();
         info!("End of frame ({})...", session_ref.sync.frame_count());
         if !session_ref.synchronizing {
             session_ref.sync.increment_frame(&mut commands);
@@ -764,14 +760,14 @@ impl<T: Config> P2PSession<T> {
     /// player.
     ///
     /// Returns [BackrollError::PlayerDisconnected] if the provided player is already disconnected.
-    pub fn disconnect_player(&self, player: PlayerHandle) -> BackrollResult<Vec<Command<T>>> {
+    pub fn disconnect_player(&self, player: PlayerHandle) -> BackrollResult<Commands<T>> {
         let mut session_ref = self.0.write();
         let queue = session_ref.player_handle_to_queue(player)?;
         if session_ref.local_connect_status[queue].read().disconnected {
             return Err(BackrollError::PlayerDisconnected(player));
         }
 
-        let mut commands = Vec::new();
+        let mut commands = Commands::<T>::default();
         let last_frame = session_ref.local_connect_status[queue].read().last_frame;
         if session_ref.players[queue].is_local() {
             // The player is local. This should disconnect the local player from the rest

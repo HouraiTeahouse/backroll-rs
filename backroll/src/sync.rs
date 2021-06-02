@@ -1,5 +1,5 @@
 use crate::{
-    command::{LoadState, SaveState},
+    command::{Commands, LoadState, SaveState},
     input::{FrameInput, GameInput, InputQueue},
     protocol::ConnectionStatus,
     BackrollError, BackrollResult, Command, Config, Frame, NULL_FRAME,
@@ -178,7 +178,7 @@ impl<T: Config> Sync<T> {
         self.input_queues[queue].set_frame_delay(delay);
     }
 
-    pub fn increment_frame(&mut self, commands: &mut Vec<Command<T>>) {
+    pub fn increment_frame(&mut self, commands: &mut Commands<T>) {
         if self.frame_count == 0 {
             self.save_current_frame(commands);
         }
@@ -245,7 +245,7 @@ impl<T: Config> Sync<T> {
         output
     }
 
-    pub fn check_simulation(&mut self, commands: &mut Vec<Command<T>>) {
+    pub fn check_simulation(&mut self, commands: &mut Commands<T>) {
         if let Some(seek_to) = self.check_simulation_consistency() {
             self.adjust_simulation(commands, seek_to);
         }
@@ -255,7 +255,7 @@ impl<T: Config> Sync<T> {
         self.saved_state.latest()
     }
 
-    pub fn load_frame(&mut self, commands: &mut Vec<Command<T>>, frame: Frame) {
+    pub fn load_frame(&mut self, commands: &mut Commands<T>, frame: Frame) {
         // find the frame in question
         if frame == self.frame_count {
             info!("Skipping NOP.");
@@ -275,7 +275,7 @@ impl<T: Config> Sync<T> {
         self.saved_state.head = (self.saved_state.head + 1) % self.saved_state.frames.len();
     }
 
-    pub fn save_current_frame(&mut self, commands: &mut Vec<Command<T>>) {
+    pub fn save_current_frame(&mut self, commands: &mut Commands<T>) {
         let cell = self.saved_state.push();
         commands.push(Command::Save(SaveState::<T> {
             cell,
@@ -283,7 +283,7 @@ impl<T: Config> Sync<T> {
         }));
     }
 
-    pub fn adjust_simulation(&mut self, commands: &mut Vec<Command<T>>, seek_to: Frame) {
+    pub fn adjust_simulation(&mut self, commands: &mut Commands<T>, seek_to: Frame) {
         let frame_count = self.frame_count;
         let count = self.frame_count - seek_to;
 

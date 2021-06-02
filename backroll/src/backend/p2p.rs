@@ -472,6 +472,10 @@ impl<T: Config> P2PSessionRef<T> {
         let mut min_frame = Frame::MAX;
         for i in 0..self.players.len() {
             let player = &self.players[i];
+            if player.is_local() {
+                continue;
+            }
+
             let mut queue_connected = true;
             if let Some(peer) = player.peer() {
                 if peer.is_running() {
@@ -701,6 +705,13 @@ impl<T: Config> P2PSession<T> {
         );
         let frame = session_ref.sync.add_local_input(queue, input)?;
         if !is_null(frame) {
+            // Update the local connect status state to indicate that we've got a
+            // confirmed local frame for this player.  this must come first so it
+            // gets incorporated into the next packet we send.
+
+            debug!("setting local connect status for local queue {} to {}", queue, frame);
+            session_ref.local_connect_status[queue].write().last_frame = frame;
+
             for player in session_ref.players.iter_mut() {
                 player.send_input(FrameInput::<T::Input> { frame, input });
             }

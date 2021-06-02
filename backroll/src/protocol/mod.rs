@@ -631,6 +631,7 @@ impl<T: Config> Peer<T> {
             PeerState::Connecting { .. } => {
                 self.push_event(Event::<T::Input>::Connected)?;
                 state.start_syncing(NUM_SYNC_PACKETS);
+                self.send(state.create_sync_request())?;
                 Ok(())
             }
             PeerState::Syncing {

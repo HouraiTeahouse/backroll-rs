@@ -3,14 +3,30 @@ use crate::{
     sync::{SavedCell, SavedFrame},
     Config, Event, Frame,
 };
+use tracing::{debug, info};
 
 pub enum Command<T>
 where
     T: Config,
 {
+    /// The client should copy the entire contents of the current game state into a
+    ///  new state struct and return it.
+    ///
+    /// Optionally, the client can compute a 64-bit checksum of the data and return it.
     Save(SaveState<T>),
+
+    /// Backroll will issue this command at the beginning of a rollback. The argument
+    /// provided will be a previously saved state returned from the save_state function.  
+    /// The client should make the current game state match the state contained in the
+    /// argument.
     Load(LoadState<T>),
+
+    /// Clients should advance the game state by exactly one frame.  
+    /// The provided inputs will contain the inputs you should use for the given frame.
     AdvanceFrame(GameInput<T::Input>),
+
+    /// Notification that something has happened in the lower level protocols. See the
+    /// `[Event]` struct for more information.
     Event(Event),
 }
 
@@ -36,6 +52,11 @@ impl<T: Config> SaveState<T> {
     /// Note this consumes the SaveState, saving multiple times is
     /// not allowed.
     pub fn save(mut self, state: T::State, checksum: Option<u64>) {
+        info!(
+            "=== Saved frame info {} (checksum: {:08x}).",
+            self.frame,
+            checksum.unwrap_or(0)
+        );
         self.cell.save(SavedFrame::<T> {
             frame: self.frame,
             data: Some(Box::new(state)),
@@ -46,7 +67,7 @@ impl<T: Config> SaveState<T> {
 }
 
 #[cfg(debug_assertions)]
-impl<'a, T: Config> Drop for SaveState<T> {
+impl<T: Config> Drop for SaveState<T> {
     fn drop(&mut self) {
         if !self.cell.is_valid() {
             panic!("A SaveState command was dropped without saving a valid state.");

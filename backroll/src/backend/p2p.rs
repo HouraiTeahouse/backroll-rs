@@ -5,7 +5,7 @@ use crate::{
     protocol::{ConnectionStatus, Event as ProtocolEvent, Peer, PeerConfig},
     sync::{self, Sync},
     transport::Peer as TransportPeer,
-    Config, Event, Frame, NetworkStats, SessionCallbacks, TaskPool,
+    Command, Config, Event, Frame, NetworkStats, TaskPool,
 };
 use async_channel::TryRecvError;
 use parking_lot::RwLock;
@@ -240,16 +240,16 @@ impl<T: Config> P2PSessionRef<T> {
         Ok(offset)
     }
 
-    fn check_initial_sync(&mut self, callbacks: &mut impl SessionCallbacks<T>) {
+    fn check_initial_sync(&mut self, commands: &mut Vec<Command<T>>) {
         if self.synchronizing && self.is_synchronized() {
-            callbacks.handle_event(Event::Running);
+            commands.push(Command::Event(Event::Running));
             self.synchronizing = false;
         }
     }
 
     fn disconnect_player(
         &mut self,
-        callbacks: &mut impl SessionCallbacks<T>,
+        commands: &mut Vec<Command<T>>,
         player: PlayerHandle,
     ) -> BackrollResult<()> {
         let queue = self.player_handle_to_queue(player)?;
@@ -273,7 +273,7 @@ impl<T: Config> P2PSessionRef<T> {
             );
             for i in 0..self.players.len() {
                 if !self.players[i].is_local() {
-                    self.disconnect_player_queue(callbacks, i, current_frame);
+                    self.disconnect_player_queue(commands, i, current_frame);
                 }
             }
         } else {
@@ -281,14 +281,14 @@ impl<T: Config> P2PSessionRef<T> {
                 "Disconnecting queue {} at frame {} by user request.",
                 queue, last_frame
             );
-            self.disconnect_player_queue(callbacks, queue, last_frame);
+            self.disconnect_player_queue(commands, queue, last_frame);
         }
         Ok(())
     }
 
     fn disconnect_player_queue(
         &mut self,
-        callbacks: &mut impl SessionCallbacks<T>,
+        commands: &mut Vec<Command<T>>,
         queue: usize,
         syncto: Frame,
     ) {
@@ -310,35 +310,35 @@ impl<T: Config> P2PSessionRef<T> {
                 "Adjusting simulation to account for the fact that {} disconnected @ {}.",
                 queue, syncto
             );
-            self.sync.adjust_simulation(callbacks, syncto);
+            self.sync.adjust_simulation(commands, syncto);
             info!("Finished adjusting simulation.");
         }
 
-        callbacks.handle_event(Event::Disconnected(PlayerHandle(queue)));
+        commands.push(Command::Event(Event::Disconnected(PlayerHandle(queue))));
 
-        self.check_initial_sync(callbacks);
+        self.check_initial_sync(commands);
     }
 
-    fn flush_events(&mut self, callbacks: &mut impl SessionCallbacks<T>) {
+    fn flush_events(&mut self, commands: &mut Vec<Command<T>>) {
         for (queue, player) in self.players.clone().iter().enumerate() {
             if let PlayerType::<T>::Remote { rx, .. } = player {
-                self.flush_peer_events(callbacks, queue, rx.clone());
+                self.flush_peer_events(commands, queue, rx.clone());
             }
         }
     }
 
     fn flush_peer_events(
         &mut self,
-        callbacks: &mut impl SessionCallbacks<T>,
+        commands: &mut Vec<Command<T>>,
         queue: usize,
         rx: async_channel::Receiver<ProtocolEvent<T::Input>>,
     ) {
         loop {
             match rx.try_recv() {
-                Ok(evt) => self.handle_event(callbacks, queue, evt),
+                Ok(evt) => self.handle_event(commands, queue, evt),
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Closed) => {
-                    self.disconnect_player(callbacks, PlayerHandle(queue))
+                    self.disconnect_player(commands, PlayerHandle(queue))
                         .expect("Disconnecting should not error on closing connection");
                     break;
                 }
@@ -348,21 +348,21 @@ impl<T: Config> P2PSessionRef<T> {
 
     fn handle_event(
         &mut self,
-        callbacks: &mut impl SessionCallbacks<T>,
+        commands: &mut Vec<Command<T>>,
         queue: usize,
         evt: ProtocolEvent<T::Input>,
     ) {
         let player = PlayerHandle(queue);
         match evt {
             ProtocolEvent::<T::Input>::Connected => {
-                callbacks.handle_event(Event::Connected(PlayerHandle(queue)));
+                commands.push(Command::Event(Event::Connected(PlayerHandle(queue))));
             }
             ProtocolEvent::<T::Input>::Synchronizing { total, count } => {
-                callbacks.handle_event(Event::Synchronizing {
+                commands.push(Command::Event(Event::Synchronizing {
                     player,
                     total,
                     count,
-                });
+                }));
             }
             ProtocolEvent::<T::Input>::Inputs(inputs) => {
                 let mut status = self.local_connect_status[queue].write();
@@ -389,33 +389,33 @@ impl<T: Config> P2PSessionRef<T> {
                 }
             }
             ProtocolEvent::<T::Input>::Synchronized => {
-                callbacks.handle_event(Event::Synchronized(player));
-                self.check_initial_sync(callbacks);
+                commands.push(Command::Event(Event::Synchronized(player)));
+                self.check_initial_sync(commands);
             }
             ProtocolEvent::<T::Input>::NetworkInterrupted { disconnect_timeout } => {
-                callbacks.handle_event(Event::ConnectionInterrupted {
+                commands.push(Command::Event(Event::ConnectionInterrupted {
                     player,
                     disconnect_timeout,
-                });
+                }));
             }
             ProtocolEvent::<T::Input>::NetworkResumed => {
-                callbacks.handle_event(Event::Synchronized(player));
+                commands.push(Command::Event(Event::Synchronized(player)));
             }
         }
     }
 
-    fn do_poll(&mut self, callbacks: &mut impl SessionCallbacks<T>) {
+    fn do_poll(&mut self, commands: &mut Vec<Command<T>>) {
         if self.sync.in_rollback() {
             return;
         }
 
-        self.flush_events(callbacks);
+        self.flush_events(commands);
 
         if self.synchronizing {
             return;
         }
 
-        self.sync.check_simulation(callbacks);
+        self.sync.check_simulation(commands);
 
         // notify all of our endpoints of their local frame number for their
         // next connection quality report
@@ -433,9 +433,9 @@ impl<T: Config> P2PSessionRef<T> {
         let min_frame = if remote_player_count == 0 {
             current_frame
         } else if self.players().count() <= 2 {
-            self.poll_2_players(callbacks)
+            self.poll_2_players(commands)
         } else {
-            self.poll_n_players(callbacks)
+            self.poll_n_players(commands)
         };
 
         info!("last confirmed frame in p2p backend is {}.", min_frame);
@@ -464,15 +464,15 @@ impl<T: Config> P2PSessionRef<T> {
                 .map(|player| player.recommend_frame_delay())
                 .max();
             if let Some(interval) = interval {
-                callbacks.handle_event(Event::TimeSync {
+                commands.push(Command::Event(Event::TimeSync {
                     frames_ahead: interval as u8,
-                });
+                }));
                 self.next_recommended_sleep = current_frame + RECOMMENDATION_INTERVAL;
             }
         }
     }
 
-    fn poll_2_players(&mut self, callbacks: &mut impl SessionCallbacks<T>) -> Frame {
+    fn poll_2_players(&mut self, commands: &mut Vec<Command<T>>) -> Frame {
         // discard confirmed frames as appropriate
         let mut min_frame = Frame::MAX;
         for i in 0..self.players.len() {
@@ -493,14 +493,14 @@ impl<T: Config> P2PSessionRef<T> {
             );
             if !queue_connected && !local_status.disconnected {
                 info!("disconnecting player {} by remote request.", i);
-                self.disconnect_player_queue(callbacks, i, min_frame);
+                self.disconnect_player_queue(commands, i, min_frame);
             }
             info!("min_frame = {}.", min_frame);
         }
         min_frame
     }
 
-    fn poll_n_players(&mut self, callbacks: &mut impl SessionCallbacks<T>) -> Frame {
+    fn poll_n_players(&mut self, commands: &mut Vec<Command<T>>) -> Frame {
         // discard confirmed frames as appropriate
         let mut min_frame = Frame::MAX;
         for queue in 0..self.players.len() {
@@ -541,7 +541,7 @@ impl<T: Config> P2PSessionRef<T> {
                 // and later receive a disconnect notification for frame n-1.
                 if !local_status.disconnected || local_status.last_frame > queue_min_confirmed {
                     info!("disconnecting queue {} by remote request.", queue);
-                    self.disconnect_player_queue(callbacks, queue, queue_min_confirmed);
+                    self.disconnect_player_queue(commands, queue, queue_min_confirmed);
                 }
             }
             info!("min_frame = {}.", min_frame);
@@ -733,20 +733,24 @@ impl<T: Config> P2PSession<T> {
     ///
     /// [SessionCallbacks]: crate::SessionCallbacks
     /// [add_local_input]: self::P2PSession::add_local_input
-    pub fn advance_frame(&self, callbacks: &mut impl SessionCallbacks<T>) {
+    pub fn advance_frame(&self) -> Vec<Command<T>> {
         let mut session_ref = self.0.write();
+        let mut commands = Vec::new();
         info!("End of frame ({})...", session_ref.sync.frame_count());
         if !session_ref.synchronizing {
-            session_ref.sync.increment_frame(callbacks);
+            session_ref.sync.increment_frame(&mut commands);
         }
-        session_ref.do_poll(callbacks);
+        session_ref.do_poll(&mut commands);
+        commands
     }
 
     /// Polls the network events. This should always be called before every frame of the game
     /// regardless of if the game is advancing it's state or not.
-    pub fn poll(&self, callbacks: &mut impl SessionCallbacks<T>) {
+    pub fn poll(&self) -> Vec<Command<T>> {
         let mut session_ref = self.0.write();
-        session_ref.do_poll(callbacks);
+        let mut commands = Vec::new();
+        session_ref.do_poll(&mut commands);
+        commands
     }
 
     /// Disconnects a player from the game.
@@ -760,17 +764,14 @@ impl<T: Config> P2PSession<T> {
     /// player.
     ///
     /// Returns [BackrollError::PlayerDisconnected] if the provided player is already disconnected.
-    pub fn disconnect_player(
-        &self,
-        callbacks: &mut impl SessionCallbacks<T>,
-        player: PlayerHandle,
-    ) -> BackrollResult<()> {
+    pub fn disconnect_player(&self, player: PlayerHandle) -> BackrollResult<Vec<Command<T>>> {
         let mut session_ref = self.0.write();
         let queue = session_ref.player_handle_to_queue(player)?;
         if session_ref.local_connect_status[queue].read().disconnected {
             return Err(BackrollError::PlayerDisconnected(player));
         }
 
+        let mut commands = Vec::new();
         let last_frame = session_ref.local_connect_status[queue].read().last_frame;
         if session_ref.players[queue].is_local() {
             // The player is local. This should disconnect the local player from the rest
@@ -783,7 +784,7 @@ impl<T: Config> P2PSession<T> {
             );
             for i in 0..session_ref.players.len() {
                 if !session_ref.players[i].is_local() {
-                    session_ref.disconnect_player_queue(callbacks, i, current_frame);
+                    session_ref.disconnect_player_queue(&mut commands, i, current_frame);
                 }
             }
         } else {
@@ -791,9 +792,9 @@ impl<T: Config> P2PSession<T> {
                 "Disconnecting queue {} at frame {} by user request.",
                 queue, last_frame
             );
-            session_ref.disconnect_player_queue(callbacks, queue, last_frame);
+            session_ref.disconnect_player_queue(&mut commands, queue, last_frame);
         }
-        Ok(())
+        Ok(commands)
     }
 
     /// Gets network statistics with a remote player.

@@ -3,10 +3,10 @@ use self::message::*;
 use crate::{
     input::FrameInput,
     time_sync::{TimeSync, UnixMillis},
-    BackrollConfig, Frame, NetworkStats, TaskPool,
+    Config, Frame, NetworkStats, TaskPool,
 };
 use async_channel::TrySendError;
-use backroll_transport::Peer;
+use backroll_transport::Peer as TransportPeer;
 use bincode::config::Options;
 use futures::FutureExt;
 use futures_timer::Delay;
@@ -83,11 +83,7 @@ impl PeerState {
     }
 
     pub fn is_running(&self) -> bool {
-        match self {
-            Self::Running { .. } => true,
-            Self::Interrupted { .. } => true,
-            _ => false,
-        }
+        matches!(self, Self::Running { .. } | Self::Interrupted { .. })
     }
 
     fn create_sync_request(&self) -> SyncRequest {
@@ -103,11 +99,7 @@ impl PeerState {
     }
 
     pub fn is_interrupted(&self) -> bool {
-        if let Self::Interrupted { .. } = self {
-            true
-        } else {
-            false
-        }
+        matches!(self, Self::Interrupted { .. })
     }
 
     pub fn start_syncing(&mut self, round_trips: u8) {
@@ -158,19 +150,19 @@ struct PeerStats {
 }
 
 #[derive(Clone)]
-pub(crate) struct BackrollPeerConfig {
-    pub peer: Peer,
+pub(crate) struct PeerConfig {
+    pub peer: TransportPeer,
     pub disconnect_timeout: Duration,
     pub disconnect_notify_start: Duration,
     pub task_pool: TaskPool,
 }
 
-pub(crate) struct BackrollPeer<T>
+pub(crate) struct Peer<T>
 where
-    T: BackrollConfig,
+    T: Config,
 {
     queue: usize,
-    config: BackrollPeerConfig,
+    config: PeerConfig,
     timesync: TimeSync<T::Input>,
     state: Arc<RwLock<PeerState>>,
 
@@ -186,7 +178,7 @@ where
     events: async_channel::Sender<Event<T::Input>>,
 }
 
-impl<T: BackrollConfig> Clone for BackrollPeer<T> {
+impl<T: Config> Clone for Peer<T> {
     fn clone(&self) -> Self {
         Self {
             queue: self.queue,
@@ -208,10 +200,10 @@ impl<T: BackrollConfig> Clone for BackrollPeer<T> {
     }
 }
 
-impl<T: BackrollConfig> BackrollPeer<T> {
+impl<T: Config> Peer<T> {
     pub fn new(
         queue: usize,
-        config: BackrollPeerConfig,
+        config: PeerConfig,
         local_connect_status: Arc<[RwLock<ConnectionStatus>]>,
     ) -> (Self, async_channel::Receiver<Event<T::Input>>) {
         let (deserialize_send, message_in) = async_channel::unbounded::<Message>();
@@ -683,10 +675,10 @@ impl<T: BackrollConfig> BackrollPeer<T> {
                 }
                 Ok(())
             }
-            PeerState::Running { remote_magic } if magic == remote_magic => return Ok(()),
+            PeerState::Running { remote_magic } if magic == remote_magic => Ok(()),
             _ => {
                 info!("Ignoring SyncReply while not syncing.");
-                return Err(PeerError::InvalidMessage);
+                Err(PeerError::InvalidMessage)
             }
         }
     }

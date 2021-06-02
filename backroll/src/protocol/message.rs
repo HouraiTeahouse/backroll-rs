@@ -23,10 +23,7 @@ pub(super) enum MessageData {
 
 impl MessageData {
     pub fn is_sync_message(&self) -> bool {
-        match self {
-            Self::SyncRequest(_) | Self::SyncReply(_) => true,
-            _ => false,
-        }
+        matches!(self, Self::SyncRequest(_) | Self::SyncReply(_))
     }
 }
 

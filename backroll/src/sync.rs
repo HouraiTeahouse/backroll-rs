@@ -1,7 +1,7 @@
 use crate::{
     input::{FrameInput, GameInput, InputQueue},
     protocol::ConnectionStatus,
-    BackrollConfig, BackrollError, BackrollResult, Frame, SessionCallbacks, NULL_FRAME,
+    BackrollError, BackrollResult, Config, Frame, SessionCallbacks, NULL_FRAME,
 };
 use parking_lot::RwLock;
 use std::sync::Arc;
@@ -9,20 +9,20 @@ use tracing::{debug, info, warn};
 
 const MAX_PREDICTION_FRAMES: usize = 8;
 
-pub struct Config {
+pub struct PlayerConfig {
     pub player_count: usize,
 }
 
 pub struct SavedFrame<T>
 where
-    T: BackrollConfig,
+    T: Config,
 {
     frame: super::Frame,
     data: Option<Box<T::State>>,
     checksum: Option<u64>,
 }
 
-impl<T: BackrollConfig> Default for SavedFrame<T> {
+impl<T: Config> Default for SavedFrame<T> {
     fn default() -> Self {
         Self {
             frame: NULL_FRAME,
@@ -34,13 +34,13 @@ impl<T: BackrollConfig> Default for SavedFrame<T> {
 
 pub struct SavedState<T>
 where
-    T: BackrollConfig,
+    T: Config,
 {
     head: usize,
     frames: [SavedFrame<T>; MAX_PREDICTION_FRAMES + 2],
 }
 
-impl<T: BackrollConfig> SavedState<T> {
+impl<T: Config> SavedState<T> {
     pub fn push(&mut self, frame: SavedFrame<T>) {
         self.head += 1;
         self.head %= self.frames.len();
@@ -60,7 +60,7 @@ impl<T: BackrollConfig> SavedState<T> {
     }
 }
 
-impl<T: BackrollConfig> Default for SavedState<T> {
+impl<T: Config> Default for SavedState<T> {
     fn default() -> Self {
         Self {
             // This should lead the first one saved frame to be at
@@ -71,13 +71,13 @@ impl<T: BackrollConfig> Default for SavedState<T> {
     }
 }
 
-pub(crate) struct BackrollSync<T>
+pub(crate) struct Sync<T>
 where
-    T: BackrollConfig,
+    T: Config,
 {
     saved_state: SavedState<T>,
     input_queues: Vec<InputQueue<T>>,
-    config: Config,
+    config: PlayerConfig,
     rolling_back: bool,
 
     last_confirmed_frame: Frame,
@@ -85,8 +85,11 @@ where
     local_connect_status: Arc<[RwLock<ConnectionStatus>]>,
 }
 
-impl<T: BackrollConfig> BackrollSync<T> {
-    pub fn new(config: Config, local_connect_status: Arc<[RwLock<ConnectionStatus>]>) -> Self {
+impl<T: Config> Sync<T> {
+    pub fn new(
+        config: PlayerConfig,
+        local_connect_status: Arc<[RwLock<ConnectionStatus>]>,
+    ) -> Self {
         let input_queues = Self::create_queues(&config);
         Self {
             saved_state: Default::default(),
@@ -290,7 +293,7 @@ impl<T: BackrollConfig> BackrollSync<T> {
         status.disconnected && status.last_frame < self.frame_count()
     }
 
-    fn create_queues(config: &Config) -> Vec<InputQueue<T>> {
+    fn create_queues(config: &PlayerConfig) -> Vec<InputQueue<T>> {
         (0..config.player_count)
             .map(|_| InputQueue::new())
             .collect()

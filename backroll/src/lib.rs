@@ -28,9 +28,9 @@ fn is_null(frame: Frame) -> bool {
 
 /// A handle for a player in a Backroll session.
 #[derive(Copy, Clone, Debug)]
-pub struct BackrollPlayerHandle(pub usize);
+pub struct PlayerHandle(pub usize);
 
-pub enum BackrollPlayer {
+pub enum Player {
     /// The local player. Backroll currently only supports one local player per machine.
     Local,
     /// A non-participating peer that recieves inputs but does not send any.
@@ -39,13 +39,13 @@ pub enum BackrollPlayer {
     Remote(transport::Peer),
 }
 
-impl BackrollPlayer {
+impl Player {
     pub(crate) fn is_local(&self) -> bool {
         matches!(self, Self::Local)
     }
 }
 
-pub trait BackrollConfig: 'static {
+pub trait Config: 'static {
     type Input: Eq + bytemuck::Pod + bytemuck::Zeroable + Send + Sync;
 
     /// The save state type for the session. This type must be safe to send across
@@ -59,7 +59,7 @@ pub trait BackrollConfig: 'static {
 
 pub trait SessionCallbacks<T>
 where
-    T: BackrollConfig,
+    T: Config,
 {
     /// The client should copy the entire contents of the current game state into a
     ///  new state struct and return it.
@@ -79,7 +79,7 @@ where
 
     ///  Notification that something has happened. See the `[BackcrollEvent]`
     /// struct for more information.
-    fn handle_event(&mut self, event: BackrollEvent);
+    fn handle_event(&mut self, event: Event);
 }
 
 #[derive(Clone, Debug, Error)]
@@ -93,9 +93,9 @@ pub enum BackrollError {
     #[error("The simulation has reached the prediction barrier.")]
     ReachedPredictionBarrier,
     #[error("Invalid player handle: {:?}", .0)]
-    InvalidPlayer(BackrollPlayerHandle),
+    InvalidPlayer(PlayerHandle),
     #[error("Player already disconnected: {:?}", .0)]
-    PlayerDisconnected(BackrollPlayerHandle),
+    PlayerDisconnected(PlayerHandle),
 }
 
 pub type BackrollResult<T> = Result<T, BackrollError>;
@@ -112,32 +112,32 @@ pub struct NetworkStats {
 }
 
 #[derive(Clone, Debug)]
-pub enum BackrollEvent {
+pub enum Event {
     /// A initial response packet from the remote player has been recieved.
-    Connected(BackrollPlayerHandle),
+    Connected(PlayerHandle),
     /// A response from a remote player has been recieved during the initial
     /// synchronization handshake.
     Synchronizing {
-        player: BackrollPlayerHandle,
+        player: PlayerHandle,
         count: u8,
         total: u8,
     },
     /// The initial synchronization handshake has been completed. The connection
     /// is considered live now.
-    Synchronized(BackrollPlayerHandle),
+    Synchronized(PlayerHandle),
     /// All remote peers are now synchronized, the session is can now start
     /// running.
     Running,
     /// The connection with a remote player has been disconnected.
-    Disconnected(BackrollPlayerHandle),
+    Disconnected(PlayerHandle),
     /// The local client is several frames ahead of all other peers. Might need
     /// to stall a few frames to allow others to catch up.
     TimeSync { frames_ahead: u8 },
     /// The connection with a remote player has been temporarily interrupted.
     ConnectionInterrupted {
-        player: BackrollPlayerHandle,
+        player: PlayerHandle,
         disconnect_timeout: Duration,
     },
     /// The connection with a remote player has been resumed after being interrupted.
-    ConnectionResumed(BackrollPlayerHandle),
+    ConnectionResumed(PlayerHandle),
 }

@@ -25,7 +25,7 @@ fn delta_encode<'a, T: bytemuck::Pod>(
     base: &'a T,
     data: impl Iterator<Item = &'a T>,
 ) -> Result<Vec<u8>, EncodeError> {
-    let mut base = base.clone();
+    let mut base = *base;
     let bits = bytemuck::bytes_of_mut(&mut base);
     let (lower, upper) = data.size_hint();
     let capacity = std::cmp::min(MAX_BUFFER_SIZE, upper.unwrap_or(lower) * bits.len());
@@ -79,7 +79,7 @@ pub fn decode<T: Pod>(base: &T, data: impl AsRef<[u8]>) -> Result<Vec<T>, Decode
         for (local_idx, byte) in bits.iter_mut().enumerate() {
             *byte ^= delta[idx * stride + local_idx];
         }
-        output.push(bytemuck::try_from_bytes::<T>(&bits)?.clone())
+        output.push(*bytemuck::try_from_bytes::<T>(&bits)?)
     }
 
     Ok(output)

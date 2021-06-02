@@ -1,15 +1,16 @@
 use std::time::Duration;
 use thiserror::Error;
 
-mod protocol;
-
 mod backend;
+mod command;
 mod input;
+mod protocol;
 mod sync;
 mod time_sync;
 
 pub use backend::*;
 pub use backroll_transport as transport;
+pub use command::Command;
 pub use input::GameInput;
 
 // TODO(james7132): Generalize the executor for these.

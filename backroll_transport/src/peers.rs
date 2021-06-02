@@ -77,14 +77,7 @@ impl<T: Eq + Hash> Peers<T> {
 
     /// Removes all peers that are disconnected.
     pub fn flush_disconnected(&self) {
-        self.0.retain(|_, peer| {
-            if !peer.is_connected() {
-                peer.disconnect();
-                true
-            } else {
-                false
-            }
-        })
+        self.0.retain(|_, peer| peer.is_connected())
     }
 }
 

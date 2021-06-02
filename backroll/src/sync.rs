@@ -265,8 +265,7 @@ impl<T: Config> Sync<T> {
         // the master).
         self.reset_prediction(self.frame_count);
         for _ in 0..count {
-            let inputs = self.synchronize_inputs();
-            callbacks.advance_frame(inputs);
+            self.increment_frame(callbacks);
         }
         debug_assert!(self.frame_count == frame_count);
 

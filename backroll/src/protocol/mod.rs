@@ -647,7 +647,6 @@ impl<T: Config> Peer<T> {
                 if *roundtrips_remaining == 0 {
                     info!("Synchronized queue {}!", self.queue);
                     self.push_event(Event::<T::Input>::Synchronized)?;
-                    self.input_decoder.reset();
                     self.stats.write().last_input_packet_recv_time = UnixMillis::now();
                     *state = PeerState::Running {
                         remote_magic: magic,

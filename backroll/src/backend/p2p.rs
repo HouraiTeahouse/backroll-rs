@@ -410,6 +410,11 @@ impl<T: Config> P2PSessionRef<T> {
         }
 
         self.flush_events(callbacks);
+
+        if self.synchronizing {
+            return;
+        }
+
         self.sync.check_simulation(callbacks);
 
         // notify all of our endpoints of their local frame number for their
@@ -472,10 +477,6 @@ impl<T: Config> P2PSessionRef<T> {
         let mut min_frame = Frame::MAX;
         for i in 0..self.players.len() {
             let player = &self.players[i];
-            if player.is_local() {
-                continue;
-            }
-
             let mut queue_connected = true;
             if let Some(peer) = player.peer() {
                 if peer.is_running() {

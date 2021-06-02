@@ -78,7 +78,7 @@ impl<T: bytemuck::Zeroable + bytemuck::Pod + Clone> InputEncoder<T> {
             queue.last_encoded = queue.pending.back().unwrap().clone();
             Ok((start_frame, bits))
         } else {
-            Ok((0, Vec::new()))
+            Ok((queue.last_acked.frame, Vec::new()))
         }
     }
 }

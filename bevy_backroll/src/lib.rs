@@ -4,6 +4,7 @@ use bevy_ecs::{
     system::System,
     world::World,
 };
+use tracing::error;
 
 pub const BACKROLL_UPDATE: &str = "backroll_update";
 
@@ -74,11 +75,26 @@ impl<T: Config> Stage for BackrollStage<T> {
                 return;
             };
 
+            {
+                let mut callbacks = StageCallbacks::<T> {
+                    world,
+                    schedule: &mut self.schedule,
+                    save_world_fn: self.save_world_fn.as_mut(),
+                    load_world_fn: self.load_world_fn.as_mut(),
+                    data: Default::default(),
+                };
+                session.poll(&mut callbacks);
+            }
+
             for player_handle in session.local_players() {
                 let input = self.input_sample_fn.run(player_handle, world);
-                session
-                    .add_local_input(player_handle, input)
-                    .expect("Adding local input for local players shouldn't fail.")
+                if let Err(err) = session.add_local_input(player_handle, input) {
+                    error!(
+                        "Error while adding local input for {:?}: {:?}",
+                        player_handle, err
+                    );
+                    return;
+                }
             }
 
             world.insert_resource(GameInput::<T::Input>::default());

@@ -679,6 +679,9 @@ impl<T: Config> P2PSession<T> {
     /// Returns [BackrollError::InvalidPlayer] if the provided player handle does not point a vali
     /// player.
     ///
+    /// # Panics
+    /// This function will panic if the player is not a local player.
+    ///
     /// [BackrollError]: crate::BackrollError
     /// [advance_frame]: self::P2PSession::advance_frame
     pub fn add_local_input(&self, player: PlayerHandle, input: T::Input) -> BackrollResult<()> {
@@ -691,6 +694,11 @@ impl<T: Config> P2PSession<T> {
         }
 
         let queue = session_ref.player_handle_to_queue(player)?;
+        assert!(
+            session_ref.players[queue].is_local(),
+            "{:?} is not a local player!",
+            player
+        );
         let frame = session_ref.sync.add_local_input(queue, input)?;
         if !is_null(frame) {
             for player in session_ref.players.iter_mut() {
@@ -713,7 +721,16 @@ impl<T: Config> P2PSession<T> {
     pub fn advance_frame(&self, callbacks: &mut impl SessionCallbacks<T>) {
         let mut session_ref = self.0.write();
         info!("End of frame ({})...", session_ref.sync.frame_count());
-        session_ref.sync.increment_frame(callbacks);
+        if !session_ref.synchronizing {
+            session_ref.sync.increment_frame(callbacks);
+        }
+        session_ref.do_poll(callbacks);
+    }
+
+    /// Polls the network events. This should always be called before every frame of the game
+    /// regardless of if the game is advancing it's state or not.
+    pub fn poll(&self, callbacks: &mut impl SessionCallbacks<T>) {
+        let mut session_ref = self.0.write();
         session_ref.do_poll(callbacks);
     }
 

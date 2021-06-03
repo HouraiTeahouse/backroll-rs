@@ -10,7 +10,7 @@ mod time_sync;
 
 pub use backend::*;
 pub use backroll_transport as transport;
-pub use command::Command;
+pub use command::{Command, Commands};
 pub use input::GameInput;
 
 // TODO(james7132): Generalize the executor for these.

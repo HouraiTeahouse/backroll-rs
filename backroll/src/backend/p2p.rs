@@ -742,9 +742,9 @@ impl<T: Config> P2PSession<T> {
 
     /// Polls the network events. This should always be called before every frame of the game
     /// regardless of if the game is advancing it's state or not.
-    pub fn poll(&self) -> Vec<Command<T>> {
+    pub fn poll(&self) -> Commands<T> {
         let mut session_ref = self.0.write();
-        let mut commands = Vec::new();
+        let mut commands = Commands::default();
         session_ref.do_poll(&mut commands);
         commands
     }

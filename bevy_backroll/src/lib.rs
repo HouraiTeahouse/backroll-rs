@@ -1,4 +1,4 @@
-use backroll::{Command, Config, GameInput, P2PSession, PlayerHandle};
+use backroll::{Command, Commands, Config, GameInput, P2PSession, PlayerHandle};
 use bevy_ecs::{
     schedule::{Schedule, ShouldRun, Stage},
     system::System,
@@ -21,7 +21,7 @@ where
 }
 
 impl<T: Config> BackrollStage<T> {
-    fn run_commands(&mut self, commands: Vec<Command<T>>, world: &mut World) {
+    fn run_commands(&mut self, commands: Commands<T>, world: &mut World) {
         for command in commands {
             match command {
                 Command::<T>::Save(save_state) => {

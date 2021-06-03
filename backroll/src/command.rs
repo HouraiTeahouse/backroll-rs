@@ -3,7 +3,7 @@ use crate::{
     sync::{SavedCell, SavedFrame},
     Config, Event, Frame,
 };
-use tracing::info;
+use tracing::{error, info};
 
 pub enum Command<T>
 where
@@ -66,7 +66,7 @@ impl<T: Config> SaveState<T> {
 impl<T: Config> Drop for SaveState<T> {
     fn drop(&mut self) {
         if !self.cell.is_valid() {
-            panic!("A SaveState command was dropped without saving a valid state.");
+            error!("A SaveState command was dropped without saving a valid state.");
         }
     }
 }

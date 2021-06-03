@@ -10,8 +10,8 @@ where
 {
     pending: VecDeque<FrameInput<T>>,
 
-    last_acked: FrameInput<T>,
-    last_encoded: FrameInput<T>,
+    last_acked: Frame,
+    last_encoded: Frame,
 }
 
 /// A buffer of all inputs that have not been yet acknowledged by a connected remote peer.
@@ -27,8 +27,8 @@ impl<T: bytemuck::Zeroable + bytemuck::Pod> Default for InputEncoder<T> {
         Self(Arc::new(RwLock::new(InputEncoderRef::<T> {
             pending: VecDeque::new(),
 
-            last_acked: Default::default(),
-            last_encoded: Default::default(),
+            last_acked: crate::NULL_FRAME,
+            last_encoded: crate::NULL_FRAME,
         })))
     }
 }
@@ -41,7 +41,7 @@ impl<T: bytemuck::Zeroable + bytemuck::Pod> InputEncoder<T> {
 
     /// Gets the frame of the last input that was encoded via `[encode]`.
     pub fn last_encoded_frame(&self) -> Frame {
-        self.0.read().last_encoded.frame
+        self.0.read().last_encoded
     }
 }
 
@@ -54,7 +54,7 @@ impl<T: bytemuck::Zeroable + bytemuck::Pod + Clone> InputEncoder<T> {
         // Get rid of our buffered input
         let last = queue.pending.iter().filter(|i| i.frame < ack_frame).last();
         if let Some(last) = last {
-            queue.last_acked = last.clone();
+            queue.last_acked = last.frame;
             queue.pending.retain(|i| i.frame >= ack_frame);
         }
     }
@@ -69,16 +69,17 @@ impl<T: bytemuck::Zeroable + bytemuck::Pod + Clone> InputEncoder<T> {
     /// the value returned by `[last_encoded_frame]` to reflect the highest
     /// frame that has been encoded.
     pub fn encode(&self) -> Result<(Frame, Vec<u8>), compression::EncodeError> {
+        let zeroed = T::zeroed();
         let mut queue = self.0.write();
         let pending = &queue.pending;
         if !pending.is_empty() {
             let start_frame = pending.front().unwrap().frame;
             let inputs = pending.iter().map(|f| &f.input);
-            let bits = compression::encode(&queue.last_acked.input, inputs)?;
-            queue.last_encoded = queue.pending.back().unwrap().clone();
+            let bits = compression::encode(&zeroed, inputs)?;
+            queue.last_encoded = queue.pending.back().unwrap().frame;
             Ok((start_frame, bits))
         } else {
-            Ok((queue.last_acked.frame, Vec::new()))
+            Ok((queue.last_acked, Vec::new()))
         }
     }
 }
@@ -87,7 +88,8 @@ struct InputDecoderRef<T>
 where
     T: bytemuck::Zeroable,
 {
-    last_decoded: FrameInput<T>,
+    last_decoded: Frame,
+    phantom: std::marker::PhantomData<T>,
 }
 
 /// A stateful decoder that decodes delta patches created by `[InputEncoder]`.
@@ -101,7 +103,8 @@ where
 impl<T: bytemuck::Zeroable + bytemuck::Pod> Default for InputDecoder<T> {
     fn default() -> Self {
         Self(Arc::new(RwLock::new(InputDecoderRef::<T> {
-            last_decoded: Default::default(),
+            last_decoded: crate::NULL_FRAME,
+            phantom: Default::default(),
         })))
     }
 }
@@ -111,29 +114,25 @@ impl<T: bytemuck::Zeroable + bytemuck::Pod> InputDecoder<T> {
     ///
     /// If no input has been decoded yet, this will be the NULL_FRAME.
     pub fn last_decoded_frame(&self) -> Frame {
-        self.0.read().last_decoded.frame
+        self.0.read().last_decoded
     }
 }
 
 impl<T: bytemuck::Zeroable + bytemuck::Pod + Clone> InputDecoder<T> {
-    /// Resets the internal state of the decoder to it's default.
-    pub fn reset(&self) {
-        self.0.write().last_decoded = Default::default();
-    }
-
     pub fn decode(
         &self,
         start_frame: Frame,
         bits: impl AsRef<[u8]>,
     ) -> Result<Vec<FrameInput<T>>, compression::DecodeError> {
         let mut decoder = self.0.write();
-        let last_decoded_frame = decoder.last_decoded.frame;
-        let current_frame = if crate::is_null(decoder.last_decoded.frame) {
+        let last_decoded_frame = decoder.last_decoded;
+        let current_frame = if crate::is_null(decoder.last_decoded) {
             start_frame - 1
         } else {
-            last_decoded_frame
+            decoder.last_decoded
         };
-        let frame_inputs = compression::decode(&decoder.last_decoded.input, bits)?
+        let zeroed = T::zeroed();
+        let frame_inputs = compression::decode(&zeroed, bits)?
             .into_iter()
             .enumerate()
             .map(|(i, input)| FrameInput::<T> {
@@ -144,10 +143,10 @@ impl<T: bytemuck::Zeroable + bytemuck::Pod + Clone> InputDecoder<T> {
             .collect::<Vec<_>>();
 
         if let Some(latest) = frame_inputs.last() {
-            decoder.last_decoded = latest.clone();
+            decoder.last_decoded = latest.clone().frame;
         }
 
-        debug_assert!(decoder.last_decoded.frame >= last_decoded_frame);
+        debug_assert!(decoder.last_decoded >= last_decoded_frame);
 
         Ok(frame_inputs)
     }

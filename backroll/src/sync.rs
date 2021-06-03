@@ -1,9 +1,11 @@
 use crate::{
+    command::{Commands, LoadState, SaveState},
     input::{FrameInput, GameInput, InputQueue},
     protocol::ConnectionStatus,
-    BackrollError, BackrollResult, Config, Frame, SessionCallbacks, NULL_FRAME,
+    BackrollError, BackrollResult, Command, Config, Frame, NULL_FRAME,
 };
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
+use std::ops::Deref;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
 
@@ -13,13 +15,14 @@ pub struct PlayerConfig {
     pub player_count: usize,
 }
 
-pub struct SavedFrame<T>
+#[derive(Clone)]
+pub(crate) struct SavedFrame<T>
 where
     T: Config,
 {
-    frame: super::Frame,
-    data: Option<Box<T::State>>,
-    checksum: Option<u64>,
+    pub frame: super::Frame,
+    pub data: Option<Box<T::State>>,
+    pub checksum: Option<u64>,
 }
 
 impl<T: Config> Default for SavedFrame<T> {
@@ -32,31 +35,78 @@ impl<T: Config> Default for SavedFrame<T> {
     }
 }
 
-pub struct SavedState<T>
+pub(crate) struct SavedCell<T>(Arc<Mutex<SavedFrame<T>>>)
+where
+    T: Config;
+
+impl<T: Config> SavedCell<T> {
+    pub fn reset(&self) {
+        *self.0.lock() = Default::default();
+    }
+
+    pub fn save(&self, frame: SavedFrame<T>) {
+        *self.0.lock() = frame;
+    }
+
+    pub fn load(&self) -> T::State {
+        let frame = self.0.lock();
+        debug!(
+            "=== Loading frame info (checksum: {:08x}).",
+            frame.checksum.unwrap_or(0)
+        );
+        if let Some(data) = &frame.data {
+            data.deref().clone()
+        } else {
+            panic!("Trying to load data that wasn't saved to.")
+        }
+    }
+
+    pub fn is_valid(&self) -> bool {
+        let frame = self.0.lock();
+        frame.data.is_some() && !crate::is_null(frame.frame)
+    }
+}
+
+impl<T: Config> Default for SavedCell<T> {
+    fn default() -> Self {
+        Self(Arc::new(Mutex::new(Default::default())))
+    }
+}
+
+impl<T: Config> Clone for SavedCell<T> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+pub(crate) struct SavedState<T>
 where
     T: Config,
 {
     head: usize,
-    frames: [SavedFrame<T>; MAX_PREDICTION_FRAMES + 2],
+    frames: [SavedCell<T>; MAX_PREDICTION_FRAMES + 2],
 }
 
 impl<T: Config> SavedState<T> {
-    pub fn push(&mut self, frame: SavedFrame<T>) {
+    pub fn push(&mut self) -> SavedCell<T> {
         self.head += 1;
         self.head %= self.frames.len();
-        self.frames[self.head] = frame;
         debug_assert!(self.head < self.frames.len());
+        self.frames[self.head].clone()
     }
 
     /// Finds a saved state for a frame.
-    pub fn find(&self, frame: Frame) -> Option<&SavedFrame<T>> {
-        self.frames.iter().find(|saved| saved.frame == frame)
+    pub fn find(&self, frame: Frame) -> Option<SavedCell<T>> {
+        self.frames
+            .iter()
+            .find(|saved| saved.0.lock().frame == frame)
+            .cloned()
     }
 
     /// Peeks at the latest saved frame in the queue.
-    pub fn latest(&self) -> &SavedFrame<T> {
+    pub fn latest(&self) -> SavedCell<T> {
         debug_assert!(self.head < self.frames.len());
-        &self.frames[self.head]
+        self.frames[self.head].clone()
     }
 }
 
@@ -128,14 +178,14 @@ impl<T: Config> Sync<T> {
         self.input_queues[queue].set_frame_delay(delay);
     }
 
-    pub fn increment_frame(&mut self, callbacks: &mut impl SessionCallbacks<T>) {
+    pub fn increment_frame(&mut self, commands: &mut Commands<T>) {
         if self.frame_count == 0 {
-            self.save_current_frame(callbacks);
+            self.save_current_frame(commands);
         }
         let inputs = self.synchronize_inputs();
-        callbacks.advance_frame(inputs);
+        commands.push(Command::AdvanceFrame(inputs));
         self.frame_count += 1;
-        self.save_current_frame(callbacks);
+        self.save_current_frame(commands);
     }
 
     pub fn add_local_input(&mut self, queue: usize, input: T::Input) -> BackrollResult<Frame> {
@@ -195,17 +245,17 @@ impl<T: Config> Sync<T> {
         output
     }
 
-    pub fn check_simulation(&mut self, callbacks: &mut impl SessionCallbacks<T>) {
+    pub fn check_simulation(&mut self, commands: &mut Commands<T>) {
         if let Some(seek_to) = self.check_simulation_consistency() {
-            self.adjust_simulation(callbacks, seek_to);
+            self.adjust_simulation(commands, seek_to);
         }
     }
 
-    pub fn get_last_saved_frame(&self) -> &SavedFrame<T> {
+    pub fn get_last_saved_frame(&self) -> SavedCell<T> {
         self.saved_state.latest()
     }
 
-    pub fn load_frame(&mut self, callbacks: &mut impl SessionCallbacks<T>, frame: Frame) {
+    pub fn load_frame(&mut self, commands: &mut Commands<T>, frame: Frame) {
         // find the frame in question
         if frame == self.frame_count {
             info!("Skipping NOP.");
@@ -213,22 +263,11 @@ impl<T: Config> Sync<T> {
         }
 
         // Move the head pointer back and load it up
-        let state = self
+        let cell = self
             .saved_state
             .find(frame)
             .unwrap_or_else(|| panic!("Could not find saved frame index for frame: {}", frame));
-
-        debug!(
-            "=== Loading frame info (checksum: {:08x}).",
-            state.checksum.unwrap_or(0)
-        );
-        callbacks.load_state(
-            state
-                .data
-                .as_deref()
-                .cloned()
-                .expect("Should not be loading unsaved frames"),
-        );
+        commands.push(Command::Load(LoadState::<T> { cell }));
 
         // Reset framecount and the head of the state ring-buffer to point in
         // advance of the current frame (as if we had just finished executing it).
@@ -236,21 +275,15 @@ impl<T: Config> Sync<T> {
         self.saved_state.head = (self.saved_state.head + 1) % self.saved_state.frames.len();
     }
 
-    pub fn save_current_frame(&mut self, callbacks: &mut impl SessionCallbacks<T>) {
-        let (data, checksum) = callbacks.save_state();
-        self.saved_state.push(SavedFrame::<T> {
+    pub fn save_current_frame(&mut self, commands: &mut Commands<T>) {
+        let cell = self.saved_state.push();
+        commands.push(Command::Save(SaveState::<T> {
+            cell,
             frame: self.frame_count,
-            data: Some(Box::new(data)),
-            checksum,
-        });
-        info!(
-            "=== Saved frame info {} (checksum: {:08x}).",
-            self.frame_count,
-            checksum.unwrap_or(0)
-        );
+        }));
     }
 
-    pub fn adjust_simulation(&mut self, callbacks: &mut impl SessionCallbacks<T>, seek_to: Frame) {
+    pub fn adjust_simulation(&mut self, commands: &mut Commands<T>, seek_to: Frame) {
         let frame_count = self.frame_count;
         let count = self.frame_count - seek_to;
 
@@ -258,14 +291,14 @@ impl<T: Config> Sync<T> {
         self.rolling_back = true;
 
         //  Flush our input queue and load the last frame.
-        self.load_frame(callbacks, seek_to);
+        self.load_frame(commands, seek_to);
         debug_assert!(self.frame_count == seek_to);
 
         // Advance frame by frame (stuffing notifications back to
         // the master).
         self.reset_prediction(self.frame_count);
         for _ in 0..count {
-            self.increment_frame(callbacks);
+            self.increment_frame(commands);
         }
         debug_assert!(self.frame_count == frame_count);
 

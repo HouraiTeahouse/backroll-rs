@@ -1,4 +1,4 @@
-use backroll::{Config, Event, GameInput, P2PSession, PlayerHandle, SessionCallbacks};
+use backroll::{Command, Commands, Config, GameInput, P2PSession, PlayerHandle};
 use bevy_ecs::{
     schedule::{Schedule, ShouldRun, Stage},
     system::System,
@@ -7,41 +7,6 @@ use bevy_ecs::{
 use tracing::error;
 
 pub const BACKROLL_UPDATE: &str = "backroll_update";
-
-struct StageCallbacks<'a, T>
-where
-    T: Config,
-{
-    world: &'a mut World,
-    schedule: &'a mut Schedule,
-    save_world_fn:
-        &'a mut (dyn System<In = (), Out = (T::State, Option<u64>)> + Send + Sync + 'static),
-    load_world_fn: &'a mut (dyn System<In = T::State, Out = ()> + Send + Sync + 'static),
-    data: std::marker::PhantomData<T>,
-}
-
-impl<'a, T: Config> SessionCallbacks<T> for StageCallbacks<'a, T> {
-    fn save_state(&mut self) -> (T::State, Option<u64>) {
-        self.save_world_fn.run((), self.world)
-    }
-
-    fn load_state(&mut self, state: T::State) {
-        self.load_world_fn.run(state, self.world);
-    }
-
-    fn advance_frame(&mut self, input: GameInput<T::Input>) {
-        // Insert input via Resource
-        *self
-            .world
-            .get_resource_mut::<GameInput<T::Input>>()
-            .unwrap() = input;
-        self.schedule.run_once(self.world);
-    }
-
-    fn handle_event(&mut self, _: Event) {
-        // TODO(james7132): Figure out how this will work.
-    }
-}
 
 pub struct BackrollStage<T>
 where
@@ -53,6 +18,30 @@ where
     input_sample_fn: Box<dyn System<In = PlayerHandle, Out = T::Input> + Send + Sync + 'static>,
     save_world_fn: Box<dyn System<In = (), Out = (T::State, Option<u64>)> + Send + Sync + 'static>,
     load_world_fn: Box<dyn System<In = T::State, Out = ()> + Send + Sync + 'static>,
+}
+
+impl<T: Config> BackrollStage<T> {
+    fn run_commands(&mut self, commands: Commands<T>, world: &mut World) {
+        for command in commands {
+            match command {
+                Command::<T>::Save(save_state) => {
+                    let (state, checksum) = self.save_world_fn.run((), world);
+                    save_state.save(state, checksum);
+                }
+                Command::<T>::Load(load_state) => {
+                    self.load_world_fn.run(load_state.load(), world);
+                }
+                Command::AdvanceFrame(inputs) => {
+                    // Insert input via Resource
+                    *world.get_resource_mut::<GameInput<T::Input>>().unwrap() = inputs;
+                    self.schedule.run_once(world);
+                }
+                Command::Event(_) => {
+                    // TODO(james7132): Figure out how this will work.
+                }
+            }
+        }
+    }
 }
 
 impl<T: Config> Stage for BackrollStage<T> {
@@ -75,16 +64,7 @@ impl<T: Config> Stage for BackrollStage<T> {
                 return;
             };
 
-            {
-                let mut callbacks = StageCallbacks::<T> {
-                    world,
-                    schedule: &mut self.schedule,
-                    save_world_fn: self.save_world_fn.as_mut(),
-                    load_world_fn: self.load_world_fn.as_mut(),
-                    data: Default::default(),
-                };
-                session.poll(&mut callbacks);
-            }
+            self.run_commands(session.poll(), world);
 
             for player_handle in session.local_players() {
                 let input = self.input_sample_fn.run(player_handle, world);
@@ -98,16 +78,7 @@ impl<T: Config> Stage for BackrollStage<T> {
             }
 
             world.insert_resource(GameInput::<T::Input>::default());
-            {
-                let mut callbacks = StageCallbacks::<T> {
-                    world,
-                    schedule: &mut self.schedule,
-                    save_world_fn: self.save_world_fn.as_mut(),
-                    load_world_fn: self.load_world_fn.as_mut(),
-                    data: Default::default(),
-                };
-                session.advance_frame(&mut callbacks);
-            }
+            self.run_commands(session.advance_frame(), world);
             world.remove_resource::<GameInput<T::Input>>();
 
             if let ShouldRun::Yes = should_run {

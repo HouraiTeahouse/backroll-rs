@@ -14,6 +14,7 @@ const MAX_PREDICTION_FRAMES: usize = 8;
 
 pub struct PlayerConfig {
     pub player_count: usize,
+    pub frame_delay: Frame,
 }
 
 #[derive(Clone)]
@@ -337,7 +338,7 @@ impl<T: Config> Sync<T> {
 
     fn create_queues(config: &PlayerConfig) -> Vec<InputQueue<T>> {
         (0..config.player_count)
-            .map(|_| InputQueue::new())
+            .map(|_| InputQueue::new(config.frame_delay))
             .collect()
     }
 }

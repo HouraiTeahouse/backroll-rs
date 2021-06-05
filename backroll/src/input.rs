@@ -119,7 +119,7 @@ where
 
 impl<T: Config> InputQueue<T> {
     #[allow(clippy::uninit_assumed_init)]
-    pub fn new() -> Self {
+    pub fn new(frame_delay: Frame) -> Self {
         // This is necessary as Default is not defined on arrays of more
         // than 32 without a Copy trait bound.
         //
@@ -142,7 +142,7 @@ impl<T: Config> InputQueue<T> {
             head: 0,
             tail: 0,
             length: 0,
-            frame_delay: 0,
+            frame_delay,
             first_frame: true,
             last_user_added_frame: super::NULL_FRAME,
             first_incorrect_frame: super::NULL_FRAME,

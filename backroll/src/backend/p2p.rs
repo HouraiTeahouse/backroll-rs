@@ -15,6 +15,7 @@ use std::time::Duration;
 use tracing::{debug, info};
 
 const RECOMMENDATION_INTERVAL: Frame = 240;
+const DEFAULT_FRAME_DELAY: Frame = 3;
 const DEFAULT_DISCONNECT_TIMEOUT: Duration = Duration::from_millis(5000);
 const DEFAULT_DISCONNECT_NOTIFY_START: Duration = Duration::from_millis(750);
 
@@ -137,6 +138,7 @@ where
     T: Config,
 {
     players: Vec<Player>,
+    frame_delay: Frame,
     disconnect_timeout: Duration,
     disconnect_notify_start: Duration,
     marker_: std::marker::PhantomData<T>,
@@ -161,10 +163,18 @@ where
     pub fn new() -> Self {
         Self {
             players: Vec::new(),
+            frame_delay: DEFAULT_FRAME_DELAY,
             disconnect_timeout: DEFAULT_DISCONNECT_TIMEOUT,
             disconnect_notify_start: DEFAULT_DISCONNECT_NOTIFY_START,
             marker_: Default::default(),
         }
+    }
+
+    /// Sets how much frame delay is used for all active players.
+    /// Defaults to 3 frames.
+    pub fn with_frame_delay(mut self, frame_delay: Frame) -> Self {
+        self.frame_delay = frame_delay;
+        self
     }
 
     /// Sets how long the client will wait for a packet from a remote player
@@ -607,7 +617,10 @@ impl<T: Config> P2PSession<T> {
             .collect();
 
         let synchronizing = players.iter().any(|player| !player.is_local());
-        let config = sync::PlayerConfig { player_count };
+        let config = sync::PlayerConfig {
+            player_count,
+            frame_delay: builder.frame_delay,
+        };
         let sync = Sync::<T>::new(config, connect_status.clone());
         Ok(Self(Arc::new(RwLock::new(P2PSessionRef::<T> {
             sync,

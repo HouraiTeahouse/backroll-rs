@@ -36,7 +36,7 @@ impl<T: bytemuck::Zeroable> FrameInput<T> {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GameInput<T> {
-    pub(crate) frame: Frame,
+    pub frame: Frame,
     pub(crate) disconnected: u8,
     pub(crate) inputs: [T; MAX_PLAYERS_PER_MATCH],
 }

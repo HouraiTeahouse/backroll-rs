@@ -5,6 +5,7 @@ use crate::{
     BackrollError, BackrollResult, Command, Config, Frame, NULL_FRAME,
 };
 use parking_lot::{Mutex, RwLock};
+use std::collections::HashMap;
 use std::ops::Deref;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
@@ -40,12 +41,17 @@ where
     T: Config;
 
 impl<T: Config> SavedCell<T> {
-    pub fn reset(&self) {
-        *self.0.lock() = Default::default();
+    pub fn reset(&self, frame: Frame) {
+        *self.0.lock() = SavedFrame::<T> {
+            frame,
+            ..Default::default()
+        };
     }
 
-    pub fn save(&self, frame: SavedFrame<T>) {
-        *self.0.lock() = frame;
+    pub fn save(&self, new_frame: SavedFrame<T>) {
+        let mut saved_frame = self.0.lock();
+        debug_assert!(new_frame.frame == saved_frame.frame);
+        *saved_frame = new_frame;
     }
 
     pub fn load(&self) -> T::State {
@@ -83,30 +89,37 @@ pub(crate) struct SavedState<T>
 where
     T: Config,
 {
-    head: usize,
-    frames: [SavedCell<T>; MAX_PREDICTION_FRAMES + 2],
+    frames: HashMap<Frame, SavedCell<T>>,
 }
 
 impl<T: Config> SavedState<T> {
-    pub fn push(&mut self) -> SavedCell<T> {
-        self.head += 1;
-        self.head %= self.frames.len();
-        debug_assert!(self.head < self.frames.len());
-        self.frames[self.head].clone()
+    pub fn get(&mut self, frame: Frame) -> SavedCell<T> {
+        if let Some(cell) = self.frames.get(&frame) {
+            cell.clone()
+        } else {
+            let saved_frame = SavedCell::default();
+            saved_frame.reset(frame);
+            self.frames.insert(frame, saved_frame.clone());
+            saved_frame
+        }
     }
 
     /// Finds a saved state for a frame.
     pub fn find(&self, frame: Frame) -> Option<SavedCell<T>> {
-        self.frames
-            .iter()
-            .find(|saved| saved.0.lock().frame == frame)
-            .cloned()
+        self.frames.get(&frame).cloned()
+    }
+
+    pub fn discard_confirmed_frames(&mut self, frame: Frame) {
+        self.frames.retain(|saved_frame, _| *saved_frame >= frame);
     }
 
     /// Peeks at the latest saved frame in the queue.
-    pub fn latest(&self) -> SavedCell<T> {
-        debug_assert!(self.head < self.frames.len());
-        self.frames[self.head].clone()
+    pub fn latest(&self) -> Option<SavedCell<T>> {
+        self.frames
+            .iter()
+            .max_by_key(|(k, _)| *k)
+            .map(|(_, v)| v)
+            .cloned()
     }
 }
 
@@ -115,7 +128,6 @@ impl<T: Config> Default for SavedState<T> {
         Self {
             // This should lead the first one saved frame to be at
             // index 0.
-            head: MAX_PREDICTION_FRAMES + 1,
             frames: Default::default(),
         }
     }
@@ -168,6 +180,7 @@ impl<T: Config> Sync<T> {
     pub fn set_last_confirmed_frame(&mut self, frame: Frame) {
         self.last_confirmed_frame = frame;
         if frame > 0 {
+            self.saved_state.discard_confirmed_frames(frame - 1);
             for queue in self.input_queues.iter_mut() {
                 queue.discard_confirmed_frames(frame - 1);
             }
@@ -233,6 +246,7 @@ impl<T: Config> Sync<T> {
 
     pub fn synchronize_inputs(&mut self) -> GameInput<T::Input> {
         let mut output: GameInput<T::Input> = Default::default();
+        output.frame = self.frame_count();
         for idx in 0..self.config.player_count {
             if self.is_disconnected(idx) {
                 output.disconnected |= 1 << idx;
@@ -252,7 +266,7 @@ impl<T: Config> Sync<T> {
     }
 
     pub fn get_last_saved_frame(&self) -> SavedCell<T> {
-        self.saved_state.latest()
+        self.saved_state.latest().unwrap()
     }
 
     pub fn load_frame(&mut self, commands: &mut Commands<T>, frame: Frame) {
@@ -262,21 +276,17 @@ impl<T: Config> Sync<T> {
             return;
         }
 
-        // Move the head pointer back and load it up
         let cell = self
             .saved_state
             .find(frame)
             .unwrap_or_else(|| panic!("Could not find saved frame index for frame: {}", frame));
         commands.push(Command::Load(LoadState::<T> { cell }));
 
-        // Reset framecount and the head of the state ring-buffer to point in
-        // advance of the current frame (as if we had just finished executing it).
         self.frame_count = frame;
-        self.saved_state.head = (self.saved_state.head + 1) % self.saved_state.frames.len();
     }
 
     pub fn save_current_frame(&mut self, commands: &mut Commands<T>) {
-        let cell = self.saved_state.push();
+        let cell = self.saved_state.get(self.frame_count);
         commands.push(Command::Save(SaveState::<T> {
             cell,
             frame: self.frame_count,

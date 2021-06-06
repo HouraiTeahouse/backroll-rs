@@ -240,9 +240,6 @@ impl<T: Config> Peer<T> {
         task_pool
             .spawn(peer.clone().deserialize_incoming(deserialize_send))
             .detach();
-        task_pool
-            .spawn(peer.clone().update_network_stats(NETWORK_STATS_INTERVAL))
-            .detach();
         task_pool.spawn(peer.clone().run()).detach();
 
         (peer, events_rx)
@@ -665,6 +662,9 @@ impl<T: Config> Peer<T> {
                         .detach();
                     task_pool
                         .spawn(self.clone().resend_inputs(QUALITY_REPORT_INTERVAL))
+                        .detach();
+                    task_pool
+                        .spawn(self.clone().update_network_stats(NETWORK_STATS_INTERVAL))
                         .detach();
                 } else {
                     self.push_event(Event::<T::Input>::Synchronizing {

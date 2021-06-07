@@ -15,8 +15,8 @@
 //! }
 //!
 //! fn main() {
-//!     App::builder()
-//!         .add_plugin(BackrollPlugin<BackrollConfig>::default())
+//!     App::build()
+//!         .add_plugin(BackrollPlugin::<BackrollConfig>::default())
 //!         .run();
 //! }
 //! ```

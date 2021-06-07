@@ -51,7 +51,7 @@ jobs:
       - uses: actions-rs/cargo@v1
         with:
           command: test
-          args: --workspace
+          args: --workspace --exclude backroll_transport_steam
         env:
           CARGO_INCREMENTAL: 0
           RUSTFLAGS: "-C debuginfo=0"

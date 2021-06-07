@@ -4,4 +4,5 @@ members = [
   "bevy_backroll",
   "backroll_transport",
   "backroll_transport_udp",
+  "backroll_transport_steam",
 ]

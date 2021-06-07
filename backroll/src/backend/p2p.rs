@@ -1,9 +1,8 @@
 use super::{BackrollError, BackrollResult, Player, PlayerHandle};
 use crate::{
-    command::Command,
-    command::Commands,
+    command::{Command, Commands},
     input::FrameInput,
-    is_null,
+    is_null, MAX_PLAYERS,
     protocol::{ConnectionStatus, Event as ProtocolEvent, Peer, PeerConfig},
     sync::{self, Sync},
     transport::Peer as TransportPeer,
@@ -617,7 +616,7 @@ impl<T: Config> P2PSession<T> {
         self.0.read().sync.frame_count()
     }
 
-    pub fn local_players(&self) -> Vec<PlayerHandle> {
+    pub fn local_players(&self) -> smallvec::SmallVec<[PlayerHandle; MAX_PLAYERS]> {
         self.0
             .read()
             .players
@@ -628,7 +627,7 @@ impl<T: Config> P2PSession<T> {
             .collect()
     }
 
-    pub fn remote_players(&self) -> Vec<PlayerHandle> {
+    pub fn remote_players(&self) -> smallvec::SmallVec<[PlayerHandle; MAX_PLAYERS]> {
         self.0
             .read()
             .players

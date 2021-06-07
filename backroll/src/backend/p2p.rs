@@ -29,10 +29,6 @@ where
         peer: Peer<T>,
         rx: async_channel::Receiver<ProtocolEvent<T::Input>>,
     },
-    Spectator {
-        peer: Peer<T>,
-        rx: async_channel::Receiver<ProtocolEvent<T::Input>>,
-    },
 }
 
 impl<T: Config> Clone for PlayerType<T> {
@@ -40,10 +36,6 @@ impl<T: Config> Clone for PlayerType<T> {
         match self {
             Self::Local => Self::Local,
             Self::Remote { peer, rx } => Self::Remote {
-                peer: peer.clone(),
-                rx: rx.clone(),
-            },
-            Self::Spectator { peer, rx } => Self::Spectator {
                 peer: peer.clone(),
                 rx: rx.clone(),
             },
@@ -64,10 +56,6 @@ impl<T: Config> PlayerType<T> {
             Player::Remote(peer) => {
                 let (peer, rx) = Self::make_peer(queue, peer, builder, connect, task_pool);
                 PlayerType::<T>::Remote { peer, rx }
-            }
-            Player::Spectator(peer) => {
-                let (peer, rx) = Self::make_peer(queue, peer, builder, connect, task_pool);
-                PlayerType::<T>::Spectator { peer, rx }
             }
         }
     }
@@ -93,7 +81,6 @@ impl<T: Config> PlayerType<T> {
         match self {
             Self::Local => None,
             Self::Remote { ref peer, .. } => Some(peer),
-            Self::Spectator { ref peer, .. } => Some(peer),
         }
     }
 
@@ -103,10 +90,6 @@ impl<T: Config> PlayerType<T> {
 
     pub fn is_remote_player(&self) -> bool {
         matches!(self, Self::Remote { .. })
-    }
-
-    pub fn is_spectator(&self) -> bool {
-        matches!(self, Self::Spectator { .. })
     }
 
     pub fn is_synchronized(&self) -> bool {
@@ -232,14 +215,6 @@ impl<T: Config> P2PSessionRef<T> {
         self.players
             .iter()
             .filter(|player| player.is_remote_player())
-            .map(|player| player.peer())
-            .flatten()
-    }
-
-    fn spectators(&self) -> impl Iterator<Item = &Peer<T>> {
-        self.players
-            .iter()
-            .filter(|player| player.is_spectator())
             .map(|player| player.peer())
             .flatten()
     }
@@ -448,18 +423,6 @@ impl<T: Config> P2PSessionRef<T> {
         info!("last confirmed frame in p2p backend is {}.", min_frame);
         if min_frame >= 0 {
             debug_assert!(min_frame != Frame::MAX);
-            if self.spectators().next().is_some() {
-                while self.next_spectator_frame <= min_frame {
-                    info!("pushing frame {} to spectators.", self.next_spectator_frame);
-
-                    // FIXME(james7132): Spectator input sending.
-                    // let (input, _)= self.sync.get_confirmed_inputs(self.next_spectator_frame);
-                    // for spectator in self.spectators() {
-                    //     spectator.send_input(input);
-                    // }
-                    self.next_spectator_frame += 1;
-                }
-            }
             info!("setting confirmed frame in sync to {}.", min_frame);
             self.sync.set_last_confirmed_frame(min_frame);
         }

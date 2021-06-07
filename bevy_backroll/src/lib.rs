@@ -132,7 +132,7 @@ where
     input_sample_fn:
         Option<Box<dyn System<In = PlayerHandle, Out = T::Input> + Send + Sync + 'static>>,
     save_world_fn:
-        Option<Box<dyn System<In = (), Out = (T::State, Option<u64>)> + Send + Sync + 'static>>,
+        Option<Box<dyn System<In = (), Out = T::State> + Send + Sync + 'static>>,
     load_world_fn: Option<Box<dyn System<In = T::State, Out = ()> + Send + Sync + 'static>>,
 }
 
@@ -154,12 +154,12 @@ impl<T: Config> BackrollStage<T> {
         for command in commands {
             match command {
                 Command::<T>::Save(save_state) => {
-                    let (state, checksum) =
+                    let state =
                         self.save_world_fn
                             .as_mut()
                             .expect("No world save system found. Please use AppBuilder::with_world_load_system")
                             .run((), world);
-                    save_state.save(state, checksum);
+                    save_state.save(state);
                 }
                 Command::<T>::Load(load_state) => {
                     self.load_world_fn
@@ -293,7 +293,7 @@ pub trait BackrollAppBuilder {
     /// Backroll session without setting this will result in a panic.
     fn with_world_save_system<T: backroll::Config>(
         &mut self,
-        system: impl System<In = (), Out = (T::State, Option<u64>)> + Send + Sync + 'static,
+        system: impl System<In = (), Out = T::State> + Send + Sync + 'static,
     ) -> &mut Self;
 
     /// Sets the world load system for Backroll. This is required. Attempting to start a
@@ -342,7 +342,7 @@ impl BackrollAppBuilder for AppBuilder {
 
     fn with_world_save_system<T: backroll::Config>(
         &mut self,
-        system: impl System<In = (), Out = (T::State, Option<u64>)> + Send + Sync + 'static,
+        system: impl System<In = (), Out = T::State> + Send + Sync + 'static,
     ) -> &mut Self {
         let stage = self
             .app

@@ -33,8 +33,6 @@ pub struct PlayerHandle(pub usize);
 pub enum Player {
     /// The local player. Backroll currently only supports one local player per machine.
     Local,
-    /// A non-participating peer that recieves inputs but does not send any.
-    Spectator(transport::Peer),
     /// A remote player that is not on the local session.
     Remote(transport::Peer),
 }

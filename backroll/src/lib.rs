@@ -53,9 +53,6 @@ pub trait Config: 'static {
     /// threads and have a 'static lifetime. This type is also responsible for
     /// dropping any internal linked state via the `[Drop]` trait.
     type State: 'static + Clone + Send + Sync;
-
-    const MAX_PLAYERS_PER_MATCH: usize;
-    const RECOMMENDATION_INTERVAL: u32;
 }
 
 #[derive(Clone, Debug, Error)]

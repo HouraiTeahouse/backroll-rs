@@ -1,8 +1,8 @@
-use std::time::Duration;
+use std::{hash::Hash, time::Duration};
 use thiserror::Error;
 
 mod backend;
-mod command;
+pub mod command;
 mod input;
 mod protocol;
 mod sync;
@@ -10,7 +10,6 @@ mod time_sync;
 
 pub use backend::*;
 pub use backroll_transport as transport;
-pub use command::{Command, Commands};
 pub use input::GameInput;
 
 // TODO(james7132): Generalize the executor for these.
@@ -51,8 +50,10 @@ pub trait Config: 'static {
 
     /// The save state type for the session. This type must be safe to send across
     /// threads and have a 'static lifetime. This type is also responsible for
-    /// dropping any internal linked state via the `[Drop]` trait.
-    type State: 'static + Clone + Send + Sync;
+    /// dropping any internal linked state via the [Drop] trait.
+    ///
+    /// [Drop]: std::ops::Drop
+    type State: Clone + Hash + Send + Sync + 'static;
 }
 
 #[derive(Clone, Debug, Error)]

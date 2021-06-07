@@ -1,12 +1,13 @@
 use super::{BackrollError, BackrollResult, Player, PlayerHandle};
 use crate::{
+    command::Command,
     command::Commands,
     input::FrameInput,
     is_null,
     protocol::{ConnectionStatus, Event as ProtocolEvent, Peer, PeerConfig},
     sync::{self, Sync},
     transport::Peer as TransportPeer,
-    Command, Config, Event, Frame, NetworkStats, TaskPool,
+    Config, Event, Frame, NetworkStats, TaskPool,
 };
 use async_channel::TryRecvError;
 use parking_lot::RwLock;

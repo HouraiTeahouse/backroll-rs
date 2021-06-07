@@ -20,7 +20,10 @@
 //!         .run();
 //! }
 //! ```
-use backroll::{Command, Commands, Config, Event, GameInput, P2PSession, PlayerHandle};
+use backroll::{
+    command::{Command, Commands},
+    Config, Event, GameInput, P2PSession, PlayerHandle,
+};
 use bevy_app::{AppBuilder, CoreStage, Events, Plugin};
 use bevy_core::FixedTimestep;
 use bevy_ecs::{

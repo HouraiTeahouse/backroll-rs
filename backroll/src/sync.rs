@@ -1,8 +1,9 @@
 use crate::{
+    command::Command,
     command::{Commands, LoadState, SaveState},
     input::{FrameInput, GameInput, InputQueue},
     protocol::ConnectionStatus,
-    BackrollError, BackrollResult, Command, Config, Frame, NULL_FRAME,
+    BackrollError, BackrollResult, Config, Frame, NULL_FRAME,
 };
 use parking_lot::{Mutex, RwLock};
 use std::collections::HashMap;

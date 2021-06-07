@@ -3,6 +3,10 @@ use crate::{
     sync::{SavedCell, SavedFrame},
     Config, Event, Frame,
 };
+use std::{
+    collections::hash_map::DefaultHasher,
+    hash::{Hash, Hasher},
+};
 use tracing::{error, info};
 
 pub enum Command<T>
@@ -32,8 +36,8 @@ where
 
 /// A command for saving the state of the game.
 ///
-/// Consumers MUST call save before the command is dropped. In debug mode,
-/// failure to do so will panic.
+/// Consumers MUST save before the command is dropped. Failure to do so will
+/// result in a panic.
 pub struct SaveState<T>
 where
     T: Config,
@@ -43,11 +47,36 @@ where
 }
 
 impl<T: Config> SaveState<T> {
-    /// Saves a single frame's state to the session's state buffer.
+    /// Saves a single frame's state to the session's state buffer and uses
+    /// the hash of the state as the checksum. This uses the
+    /// [DefaultHasher] implementation.
     ///
-    /// Note this consumes the SaveState, saving multiple times is
-    /// not allowed.
-    pub fn save(self, state: T::State, checksum: Option<u64>) {
+    /// This consumes the SaveState, saving multiple times is not allowed.
+    ///
+    /// [DefaultHasher]: std::collections::hash_map::DefaultHasher
+    pub fn save(self, state: T::State) {
+        let mut hasher = DefaultHasher::new();
+        state.hash(&mut hasher);
+        self.save_with_hash(state, hasher.finish());
+    }
+
+    /// Saves a single frame's state to the session's state buffer without
+    /// a saved checksum.
+    ///
+    /// This consumes the SaveState, saving multiple times is not allowed.
+    pub fn save_without_hash(self, state: T::State) {
+        self.save_state(state, None);
+    }
+
+    /// Saves a single frame's state to the session's state buffer with a
+    /// provided checksum.
+    ///
+    /// This consumes the SaveState, saving multiple times is not allowed.
+    pub fn save_with_hash(self, state: T::State, checksum: u64) {
+        self.save_state(state, Some(checksum));
+    }
+
+    fn save_state(self, state: T::State, checksum: Option<u64>) {
         info!(
             "=== Saved frame state {} (checksum: {:08x}).",
             self.frame,
@@ -58,11 +87,10 @@ impl<T: Config> SaveState<T> {
             data: Some(Box::new(state)),
             checksum,
         });
-        debug_assert!(self.cell.is_valid());
+        assert!(self.cell.is_valid());
     }
 }
 
-#[cfg(debug_assertions)]
 impl<T: Config> Drop for SaveState<T> {
     fn drop(&mut self) {
         if !self.cell.is_valid() {

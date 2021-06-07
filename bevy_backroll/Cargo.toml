@@ -6,5 +6,6 @@ edition = "2018"
 [dependencies]
 backroll = { path = "../backroll", version = "0.1" }
 bevy_ecs = "0.5"
+bevy_core = "0.5"
 bevy_app = "0.5"
 tracing = "0.1"

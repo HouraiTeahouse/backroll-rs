@@ -1,5 +1,28 @@
+//! A [Bevy](https://bevyengine.org) plugin that adds support for running
+//! [Backroll](https://crates.io/crates/backroll) sessions.
+//!
+//! Installing the plugin:
+//! ```rust no_run
+//! use bevy::prelude::*;
+//! use bevy_backroll::*;
+//!
+//! // Create your Backroll Config
+//! pub struct BackrollConfig;
+//!
+//! impl backroll::Config for BackrollConfig {
+//!     type Input = i32;
+//!     type State = i32;
+//! }
+//!
+//! fn main() {
+//!     App::builder()
+//!         .add_plugin(BackrollPlugin<BackrollConfig>::default())
+//!         .run();
+//! }
+//! ```
 use backroll::{Command, Commands, Config, Event, GameInput, P2PSession, PlayerHandle};
 use bevy_app::{AppBuilder, CoreStage, Events, Plugin};
+use bevy_core::FixedTimestep;
 use bevy_ecs::{
     schedule::{Schedule, ShouldRun, Stage, SystemDescriptor, SystemSet, SystemStage},
     system::{Commands as BevyCommands, System},
@@ -7,6 +30,13 @@ use bevy_ecs::{
 };
 use tracing::{debug, error};
 
+pub use backroll;
+
+/// The [SystemLabel] used by the [BackrollStage] added by [BackrollPlugin].
+///
+/// [SystemLabel]: bevy_ecs::schedule::SystemLabel
+/// [BackrollStage]: self::BackrollStage
+/// [BackrollPlugin]: self::BackrollPlugin
 pub const BACKROLL_UPDATE: &str = "backroll_update";
 const BACKROLL_LOGIC_UPDATE: &str = "backroll_logic_update";
 
@@ -55,11 +85,45 @@ impl FrameStaller {
     }
 }
 
+/// A [Stage] that transparently runs and handles Backroll sessions.
+///
+/// Each time the stage runs, it will poll the Backroll session, sample local player
+/// inputs for the session, then advance the frame.
+///
+/// The stage will automatically handle Backroll commands by doing the following:
+///  
+///  - [Command::Save]: Runs the system registered through [with_world_save_system]
+///    to make a save state of the [World].
+///  - [Command::Load]: Runs the system registered through [with_world_load_system]
+///    to restore a save state of the [World].
+///  - [Command::AdvanceFrame]: Injects the provided [GameInput] as a resource then
+///    runs all simulation based systems once (see: [with_rollback_system])
+///  - [Command::Event]: Forwards all events to Bevy. Can be read out via [EventReader].
+///    Automatically handles time synchronization by smoothly injecting stall frames when
+///    ahead of remote players.
+///
+/// This stage is best used with a [FixedTimestep] run criteria to ensure that the systems
+/// are running at a consistent rate on all players in the game.
+///
+/// This stage will only run when there is a [P2PSession] with the same [Config] parameter
+/// registered as a resource within the running World. If the stage was added via
+/// [BackrollPlugin], [BackrollCommands::start_backroll_session] and [BackrollCommands::end_backroll_session]
+/// can be used to start or end a session.
+///
+/// [Stage]: bevy_ecs::schedule::Stage
+/// [World]: bevy_ecs::world::World
+/// [Command]: backroll::Command
+/// [BackrollCommands]: self::BackrollCommands
+/// [FixedTimestep]: bevy_core::FixedTimestep
+/// [EventReader]: bevy_app::EventReader
+/// [with_world_save_system]: self::BackrollAppBuilder::with_world_save_system
+/// [with_world_load_system]: self::BackrollAppBuilder::with_world_save_system
+/// [with_rollback_system]: self::BackrollAppBuilder::with_rollback_system
 pub struct BackrollStage<T>
 where
     T: Config,
 {
-    schedule: Schedule,
+    pub schedule: Schedule,
     run_criteria: Option<Box<dyn System<In = (), Out = ShouldRun>>>,
     staller: FrameStaller,
     input_sample_fn:
@@ -87,13 +151,17 @@ impl<T: Config> BackrollStage<T> {
         for command in commands {
             match command {
                 Command::<T>::Save(save_state) => {
-                    let (state, checksum) = self.save_world_fn.as_mut().unwrap().run((), world);
+                    let (state, checksum) =
+                        self.save_world_fn
+                            .as_mut()
+                            .expect("No world save system found. Please use AppBuilder::with_world_load_system")
+                            .run((), world);
                     save_state.save(state, checksum);
                 }
                 Command::<T>::Load(load_state) => {
                     self.load_world_fn
                         .as_mut()
-                        .unwrap()
+                        .expect("No world load system found. Please use AppBuilder::with_world_load_system")
                         .run(load_state.load(), world);
                 }
                 Command::AdvanceFrame(inputs) => {
@@ -147,7 +215,7 @@ impl<T: Config> Stage for BackrollStage<T> {
                 let input = self
                     .input_sample_fn
                     .as_mut()
-                    .unwrap()
+                    .expect("No input sampler system found. Please use AppBuilder::with_input_sampler_system")
                     .run(player_handle, world);
                 if let Err(err) = session.add_local_input(player_handle, input) {
                     error!(
@@ -169,6 +237,16 @@ impl<T: Config> Stage for BackrollStage<T> {
     }
 }
 
+/// A Bevy plugin that adds a [BackrollStage] to the app.
+///
+/// All systems registered with the stage will run single threaded
+/// to avoid potentially introducing non-deterministic simulation results.
+///
+/// Also registers Backroll's [Event] as an event type, which the stage will
+/// forward to Bevy.
+///
+/// [BackrolLStage]: self::BackrollStage
+/// [Event]: backroll::Event
 pub struct BackrollPlugin<T>(std::marker::PhantomData<T>)
 where
     T: backroll::Config + Send + Sync;
@@ -182,29 +260,41 @@ impl<T: backroll::Config + Send + Sync> Plugin for BackrollPlugin<T> {
             BACKROLL_UPDATE,
             BackrollStage::<T> {
                 schedule,
+                run_criteria: Some(Box::new(FixedTimestep::steps_per_second(60.0))),
                 ..Default::default()
             },
         );
     }
 }
 
+impl<T: Config + Send + Sync> Default for BackrollPlugin<T> {
+    fn default() -> Self {
+        Self(Default::default())
+    }
+}
+
+/// Extension trait for [AppBuilder] for configuring [App]s using a [BackrollPlugin].
+///
+/// [App]: bevy_app::AppBuilder
+/// [AppBuilder]: bevy_app::AppBuilder
+/// [BackrollPlugin]: self::BackrollPlugin
 pub trait BackrollAppBuilder {
-    /// Sets the imput sampler system for Backroll. This is required. Attempting to use
-    /// the BackrollPlugin without setting this will result in a panic.
+    /// Sets the imput sampler system for Backroll. This is required. Attempting to start
+    /// a Backroll session without setting this will result in a panic.
     fn with_input_sampler_system<T: backroll::Config>(
         &mut self,
         system: impl System<In = PlayerHandle, Out = T::Input> + Send + Sync + 'static,
     ) -> &mut Self;
 
-    /// Sets the world save system for Backroll. This is required. Attempting to use
-    /// the BackrollPlugin without setting this will result in a panic.
+    /// Sets the world save system for Backroll. This is required. Attempting to start a
+    /// Backroll session without setting this will result in a panic.
     fn with_world_save_system<T: backroll::Config>(
         &mut self,
         system: impl System<In = (), Out = (T::State, Option<u64>)> + Send + Sync + 'static,
     ) -> &mut Self;
 
-    /// Sets the world load system for Backroll. This is required. Attempting to use
-    /// the BackrollPlugin without setting this will result in a panic.
+    /// Sets the world load system for Backroll. This is required. Attempting to start a
+    /// Backroll session without setting this will result in a panic.
     fn with_world_load_system<T: backroll::Config>(
         &mut self,
         system: impl System<In = T::State, Out = ()> + Send + Sync + 'static,
@@ -228,6 +318,8 @@ pub trait BackrollAppBuilder {
     ) -> &mut Self;
 
     /// Adds a [SystemSet] to the BackrollStage.
+    ///
+    /// [SystemSet]: bevy_ecs::schedule::SystemSet
     fn with_rollback_system_set<T: backroll::Config>(&mut self, system: SystemSet) -> &mut Self;
 }
 
@@ -312,6 +404,9 @@ impl BackrollAppBuilder for AppBuilder {
     }
 }
 
+/// Extension trait for [Commands] to start and stop Backroll sessions.
+///
+/// [Commands]: bevy_ecs::system::Commands
 pub trait BackrollCommands {
     /// Starts a new Backroll session. If one is already in progress, it will be replaced
     /// and the old session will be dropped. This will add the session as a resource, which

@@ -9,19 +9,20 @@ Backroll is a pure Rust implementation of [GGPO](https://www.ggpo.net/)
 rollback networking library.
 
 ## Development Status
-This is still in an untested alpha stage. At time of writing, the public facing API 
-is largely stable, but a large portion of the functionality provided is still untested 
-in real games.
+This is still in an early beta stage. At time of writing, the public facing API 
+is stable, and has undergone limited testing. There may still be notable bugs
+that have not been found yet.
 
 ## Differences with the C++ implementation
 
  * (Almost) 100% pure **safe** Rust. No unsafe pointer manipulation.
- * Type safety. backroll-rs heavily utilizes generics to allow for
+ * Type safety. backroll-rs heavily utilizes generics and associated types to 
+   avoid serialization overhead and potentially unsafe type conversions when 
+   saving and loading game state.
  * Abstracted transport layer protocols - integrate and use any transport layer
    library you need. Comes with a raw UDP socket based implementation.
- * Configurable at compile time - Almost all Backroll types takes a
-   `BackrollConfig` generic type parameter that specifies session constants.
-   Does not require forking to change the hardcoded constants.
+ * Configurable at runtime - Many of the hard-coded constants in GGPO are exposed
+   as configuration parameters during session initialization.
  * Reduced memory usage - Backroll's use of generics potentially shrinks down
    the sizes of many data types.
  * Vectorized input compression scheme - Backroll utilizes the same XOR + RLE
@@ -33,9 +34,9 @@ in real games.
 This repo contains the following crates:
 
  * backroll - the main Backroll interface, intended to be used as the original
-   GGPO. (Complete, untested)
+   GGPO.
  * backroll\_transport - An isolated set of transport layer abstractions. 
  * backroll\_transport\_udp - A transport layer implementation using raw UDP
    sockets. 
  * bevy\_backroll - a integration plugin for [bevy](https://bevyengine.org/).
-   (In Progress, untested).
+   (Complete, untested).

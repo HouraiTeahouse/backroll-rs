@@ -186,9 +186,9 @@ where
     }
 
     /// Sets how long the client will wait for a packet from a remote player before
-    /// before firing a [BackrollEvent::ConnectionInterrupted] event. Defaults to 750ms.
+    /// before firing a [Event::ConnectionInterrupted] event. Defaults to 750ms.
     ///
-    /// [BackrollEvent]: crate::BackrollEvent
+    /// [Event]: crate::Event
     pub fn with_disconnect_notify_start(mut self, timeout: Duration) -> Self {
         self.disconnect_timeout = timeout;
         self
@@ -734,15 +734,17 @@ impl<T: Config> P2PSession<T> {
         Ok(())
     }
 
-    /// Advances the game simulation by a single frame. This will call [SessionCallbacks::advance_frame]
+    /// Advances the game simulation by a single frame. This will issue a [Command::AdvanceFrame]
     /// then check if the simulation is consistent with the inputs sent by remote players. If not, a
-    /// rollback will be triggered, and the game will be saved and resimulated from the point of rollback.
+    /// rollback will be triggered, and the game will be resimulated from the point of rollback.
     ///
     /// For a corrrect simulation, [add_local_input] must be called on all local players every frame before
-    /// calling this.
+    /// calling this. If any call to [add_local_input] fails, this should not be called.
     ///
-    /// [SessionCallbacks]: crate::SessionCallbacks
+    /// All of the provided commands must be executed in order, and must not be reordered or skipped.
+    ///
     /// [add_local_input]: self::P2PSession::add_local_input
+    /// [Command]: crate::command::Command
     pub fn advance_frame(&self) -> Commands<T> {
         let mut session_ref = self.0.write();
         let mut commands = Commands::<T>::default();
@@ -754,8 +756,11 @@ impl<T: Config> P2PSession<T> {
         commands
     }
 
-    /// Polls the network events. This should always be called before every frame of the game
-    /// regardless of if the game is advancing it's state or not.
+    /// Flushes lower level network events. This should always be called before adding local
+    /// inputs every frame of the game regardless of if the game is advancing it's state or
+    /// not.
+    ///
+    /// All of the provided commands must be executed in order, and must not be reordered or skipped.
     pub fn poll(&self) -> Commands<T> {
         let mut session_ref = self.0.write();
         let mut commands = Commands::default();

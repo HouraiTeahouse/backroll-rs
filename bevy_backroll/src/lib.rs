@@ -33,6 +33,9 @@ use bevy_ecs::{
 };
 use tracing::{debug, error};
 
+#[cfg(feature="steam")]
+mod steam;
+
 pub use backroll;
 
 /// The [SystemLabel] used by the [BackrollStage] added by [BackrollPlugin].
@@ -246,6 +249,9 @@ impl<T: Config> Stage for BackrollStage<T> {
 ///
 /// Also registers Backroll's [Event] as an event type, which the stage will
 /// forward to Bevy.
+/// 
+/// If the feature is enabled, this will also register the associated transport
+/// layer implementations for Steam.
 ///
 /// [BackrolLStage]: self::BackrollStage
 /// [Event]: backroll::Event
@@ -266,6 +272,9 @@ impl<T: backroll::Config + Send + Sync> Plugin for BackrollPlugin<T> {
                 ..Default::default()
             },
         );
+
+        #[cfg(feature="steam")]
+        builder.add_plugin(steam::BackrollSteamPlugin);
     }
 }
 

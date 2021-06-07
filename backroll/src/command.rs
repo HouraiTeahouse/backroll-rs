@@ -9,6 +9,14 @@ use std::{
 };
 use tracing::{error, info};
 
+/// A singular command for a Backroll session client to execute.
+///
+/// Proper execution of the command is not optional, and must be done in the exact
+/// order [Commands] returns it in. Filtering or altering the order in which commands
+/// are executed, or dropping commands without executing them may result incorrect
+/// simulation and/or panics.
+///
+/// [Commands]: self::Commands
 pub enum Command<T>
 where
     T: Config,
@@ -120,6 +128,12 @@ impl<T: Config> LoadState<T> {
     }
 }
 
+/// An ordered container of commands for clients to execute.
+///
+/// Proper execution of the command is not optional, and must be done in the exact
+/// order they are returned in. Filtering or altering the order in which commands
+/// are executed, or dropping commands without executing them may result incorrect
+/// simulation and/or panics.
 pub struct Commands<T>
 where
     T: Config,

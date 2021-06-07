@@ -117,6 +117,9 @@ impl<T: Config> PlayerType<T> {
     }
 }
 
+/// A builder for [P2PSession].
+///
+/// [P2PSession]: self::P2PSession
 pub struct P2PSessionBuilder<T>
 where
     T: Config,
@@ -205,7 +208,6 @@ where
 
     synchronizing: bool,
     next_recommended_sleep: Frame,
-    next_spectator_frame: Frame,
 
     local_connect_status: Arc<[RwLock<ConnectionStatus>]>,
 }
@@ -534,6 +536,10 @@ impl<T: Config> P2PSessionRef<T> {
     }
 }
 
+/// The main peer-to-peer Backroll session.
+///
+/// This type internally wraps an Arc<RwLock<...>>, so it is safe to
+/// send and access across threads, and is cheap to clone.
 pub struct P2PSession<T>(Arc<RwLock<P2PSessionRef<T>>>)
 where
     T: Config;
@@ -591,7 +597,6 @@ impl<T: Config> P2PSession<T> {
             players,
             synchronizing,
             next_recommended_sleep: 0,
-            next_spectator_frame: 0,
             local_connect_status: connect_status,
         }))))
     }

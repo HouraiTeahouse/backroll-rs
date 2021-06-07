@@ -131,8 +131,7 @@ where
     staller: FrameStaller,
     input_sample_fn:
         Option<Box<dyn System<In = PlayerHandle, Out = T::Input> + Send + Sync + 'static>>,
-    save_world_fn:
-        Option<Box<dyn System<In = (), Out = T::State> + Send + Sync + 'static>>,
+    save_world_fn: Option<Box<dyn System<In = (), Out = T::State> + Send + Sync + 'static>>,
     load_world_fn: Option<Box<dyn System<In = T::State, Out = ()> + Send + Sync + 'static>>,
 }
 

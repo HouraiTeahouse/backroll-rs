@@ -15,7 +15,8 @@ pub use input::GameInput;
 // TODO(james7132): Generalize the executor for these.
 pub(crate) use bevy_tasks::TaskPool;
 
-pub const MAX_PLAYERS_PER_MATCH: usize = 8;
+/// The maximum number of players supported in a single game.
+pub const MAX_PLAYERS: usize = 8;
 // Approximately 2 seconds of frames.
 const MAX_ROLLBACK_FRAMES: usize = 120;
 
@@ -30,6 +31,7 @@ fn is_null(frame: Frame) -> bool {
 #[derive(Copy, Clone, Debug)]
 pub struct PlayerHandle(pub usize);
 
+/// Players within a Backroll session.
 pub enum Player {
     /// The local player. Backroll currently only supports one local player per machine.
     Local,
@@ -43,12 +45,22 @@ impl Player {
     }
 }
 
+/// Compile time parameterization for Backroll sessions.
 pub trait Config: 'static {
-    type Input: Eq + bytemuck::Pod + bytemuck::Zeroable + Send + Sync;
+    /// The input type for a Backroll session. This is the only game-related data
+    /// transmitted over the network.
+    ///
+    /// Reminder: Types implementing [Pod] may not have the same byte representation
+    /// on platforms with different endianness. Backroll assumes that all players are
+    /// running with the same endianness when encoding and decoding inputs. It may be
+    /// worthwhile to ensure that all players are running with the same endianess.
+    ///
+    /// [Pod]: bytemuck::Pod
+    type Input: PartialEq + bytemuck::Pod + bytemuck::Zeroable + Send + Sync;
 
     /// The save state type for the session. This type must be safe to send across
     /// threads and have a 'static lifetime. This type is also responsible for
-    /// dropping any internal linked state via the [Drop] trait.
+    /// dropping any internal linked state via [Drop].
     ///
     /// [Drop]: std::ops::Drop
     type State: Clone + Hash + Send + Sync + 'static;
@@ -73,17 +85,26 @@ pub enum BackrollError {
 pub type BackrollResult<T> = Result<T, BackrollError>;
 
 #[derive(Clone, Debug, Default)]
+/// Event that occurs during the course of a session.
 pub struct NetworkStats {
+    /// The round time trip duration between the local player and the
+    /// remote.
     pub ping: Duration,
+    /// The number of outgoing messages currently not sent.
     pub send_queue_len: usize,
+    /// The number of incoming messages currently not processed.
     pub recv_queue_len: usize,
+    /// The number of kilobytes sent per second, a rolling average.
     pub kbps_sent: u32,
 
+    /// The local frame advantage relative to the associated peer.
     pub local_frames_behind: Frame,
+    /// The remote frame advantage of the associated peer relative to the local player.
     pub remote_frames_behind: Frame,
 }
 
 #[derive(Clone, Debug)]
+/// Event that occurs during the course of a session.
 pub enum Event {
     /// A initial response packet from the remote player has been recieved.
     Connected(PlayerHandle),

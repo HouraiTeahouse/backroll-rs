@@ -1,6 +1,4 @@
-use crate::{
-    BackrollError, Config, Frame, PlayerHandle, MAX_PLAYERS_PER_MATCH, MAX_ROLLBACK_FRAMES,
-};
+use crate::{BackrollError, Config, Frame, PlayerHandle, MAX_PLAYERS, MAX_ROLLBACK_FRAMES};
 use std::convert::TryFrom;
 use tracing::info;
 
@@ -35,10 +33,12 @@ impl<T: bytemuck::Zeroable> FrameInput<T> {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// A container of inputs for all of the players for single frame of a game.
 pub struct GameInput<T> {
+    /// The frame number the inputs correspond to.
     pub frame: Frame,
     pub(crate) disconnected: u8,
-    pub(crate) inputs: [T; MAX_PLAYERS_PER_MATCH],
+    pub(crate) inputs: [T; MAX_PLAYERS],
 }
 
 impl<T: bytemuck::Zeroable> Default for GameInput<T> {
@@ -57,7 +57,7 @@ impl<T: bytemuck::Zeroable> GameInput<T> {
     ///
     /// [InvalidPlayer]: crate::BackrollError::InvalidPlayer
     pub fn get(&self, player: PlayerHandle) -> Result<&T, BackrollError> {
-        if player.0 >= MAX_PLAYERS_PER_MATCH {
+        if player.0 >= MAX_PLAYERS {
             return Err(BackrollError::InvalidPlayer(player));
         }
         Ok(&self.inputs[player.0])
@@ -68,14 +68,10 @@ impl<T: bytemuck::Zeroable> GameInput<T> {
     ///
     /// [InvalidPlayer]: crate::BackrollError::InvalidPlayer
     pub fn is_disconnected(&self, player: PlayerHandle) -> Result<bool, BackrollError> {
-        if player.0 >= MAX_PLAYERS_PER_MATCH {
+        if player.0 >= MAX_PLAYERS {
             return Err(BackrollError::InvalidPlayer(player));
         }
         Ok(self.disconnected & (1 << player.0) != 0)
-    }
-
-    pub(crate) fn clear(&mut self) {
-        self.inputs = unsafe { core::mem::zeroed() };
     }
 }
 

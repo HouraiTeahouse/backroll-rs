@@ -3,8 +3,8 @@ use backroll_transport::{Peer, Peers};
 use bevy_tasks::TaskPool;
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
-use steamworks::{Client, ClientManager, SendType, SteamId};
-use tracing::{debug, error};
+use steamworks::{CallbackHandle, Client, ClientManager, SendType, SteamId, P2PSessionRequest};
+use tracing::{debug, error, warn};
 
 /// The maximum size of unreliable packet that can be sent or recieved,
 /// in bytes.
@@ -44,17 +44,36 @@ pub struct SteamP2PManager {
     peers: Arc<Peers<SteamId>>,
     client: Client<ClientManager>,
     task_pool: TaskPool,
+    _session_request: CallbackHandle<ClientManager>,
 }
 
 impl SteamP2PManager {
     /// Starts a new thread to listen for P2P messages from Steam.
     pub fn bind(pool: TaskPool, client: Client<ClientManager>) -> Self {
         let peers = Arc::new(Peers::default());
+
+        let peer_p2p = Arc::downgrade(&peers);
+        let client_p2p = client.clone();
+
         let manager = Self {
             peers: peers.clone(),
             client: client.clone(),
             task_pool: pool.clone(),
+
+            // Register a P2P session request handler.
+            _session_request: client.register_callback(move |request: P2PSessionRequest| {
+                if let Some(peers) = peer_p2p.upgrade() {
+                    if peers.contains(&request.remote) {
+                        client_p2p.networking().accept_p2p_session(request.remote);
+                        debug!("Accepted P2P session request from remote: {:?}", request.remote);
+                    } else {
+                        client_p2p.networking().close_p2p_session(request.remote);
+                        warn!("Recieved P2P session request from uknown remote: {:?}. Dropping.", request.remote);
+                    }
+                }
+            })
         };
+
 
         let peers = Arc::downgrade(&peers);
         std::thread::spawn(move || Self::recv(peers, client));
@@ -105,6 +124,7 @@ impl SteamP2PManager {
                 error!("Error while sending message to {:?}", remote);
             }
         }
+        client.networking().close_p2p_session(remote);
     }
 
     fn recv(peers: Weak<Peers<SteamId>>, client: Client<ClientManager>) {

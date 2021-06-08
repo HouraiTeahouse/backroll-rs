@@ -3,9 +3,14 @@ name = "bevy_backroll"
 version = "0.1.0"
 edition = "2018"
 
+# [package.metadata.docs.rs]
+features = [ "docs-only" ]
+
 [features]
 default = []
 steam = ["bevy-steamworks", "backroll_transport_steam"]
+# Skip looking for the Steamworks SDK for docs builds
+docs-only = ["steam", "backroll_transport_steam/docs-only"]
 
 [dependencies]
 backroll = { path = "../backroll", version = "0.1" }

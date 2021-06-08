@@ -1,0 +1,5 @@
+[unstable]
+configurable-env = true
+
+[env]
+STEAM_SDK_LOCATION = { value = "lib/steam", relative = true, force = true }

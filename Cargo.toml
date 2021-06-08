@@ -4,5 +4,6 @@ members = [
   "bevy_backroll",
   "backroll_transport",
   "backroll_transport_udp",
+  # Intentionally left out as it breaks workspace builds
   "backroll_transport_steam",
 ]

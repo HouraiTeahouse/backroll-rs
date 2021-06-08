@@ -38,5 +38,29 @@ This repo contains the following crates:
  * backroll\_transport - An isolated set of transport layer abstractions. 
  * backroll\_transport\_udp - A transport layer implementation using raw UDP
    sockets. 
+ * backroll\_transport\_steam - A transport layer implementation using the 
+   Steam provided networking utilities. Enables access to the Steam Datagram
+   Relay service.
  * bevy\_backroll - a integration plugin for [bevy](https://bevyengine.org/).
    (Complete, untested).
+ * lib - third-party linking dependencies (i.e. Steam) for easier local 
+   development
+
+# Building Locally
+Due to linking requirements for backroll\_transport\_steam, local builds that 
+include the crate currently only build when the Steamworks SDK is available.
+
+According to steamworks-rs, at build time the `STEAM_SDK_LOCATION` env var must be 
+set to a copy of the [Steamworks SDK](https://partner.steamgames.com/doc/sdk) to
+properly link against.
+
+The Backroll repo has an embedded copy of the Steamworks SDK saved within it.
+If you are using Rust nightly v1.52+, cargo will automatically set this variable
+and use the embedded copy of the Steamworks SDK. This is unfortunately unavailable
+to stable Rust until [`configurable-env`](https://doc.rust-lang.org/nightly/cargo/reference/unstable.html#configurable-env)
+stablizes.
+
+If you are not using Steamworks, you can ignore this entirely. However, blanket
+workspace builds (i.e. `cargo build` in the repo root) will include the crate by 
+default. Using cargo dependencies via `path` should still work so long as Steam 
+support is not needed.

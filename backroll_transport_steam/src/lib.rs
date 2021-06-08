@@ -3,7 +3,7 @@ use backroll_transport::{Peer, Peers};
 use bevy_tasks::TaskPool;
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
-use steamworks::{CallbackHandle, Client, ClientManager, SendType, SteamId, P2PSessionRequest};
+use steamworks::{CallbackHandle, Client, ClientManager, P2PSessionRequest, SendType, SteamId};
 use tracing::{debug, error, warn};
 
 /// The maximum size of unreliable packet that can be sent or recieved,
@@ -65,15 +65,20 @@ impl SteamP2PManager {
                 if let Some(peers) = peer_p2p.upgrade() {
                     if peers.contains(&request.remote) {
                         client_p2p.networking().accept_p2p_session(request.remote);
-                        debug!("Accepted P2P session request from remote: {:?}", request.remote);
+                        debug!(
+                            "Accepted P2P session request from remote: {:?}",
+                            request.remote
+                        );
                     } else {
                         client_p2p.networking().close_p2p_session(request.remote);
-                        warn!("Recieved P2P session request from uknown remote: {:?}. Dropping.", request.remote);
+                        warn!(
+                            "Recieved P2P session request from uknown remote: {:?}. Dropping.",
+                            request.remote
+                        );
                     }
                 }
-            })
+            }),
         };
-
 
         let peers = Arc::downgrade(&peers);
         std::thread::spawn(move || Self::recv(peers, client));

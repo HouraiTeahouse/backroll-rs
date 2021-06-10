@@ -51,9 +51,10 @@ impl<T: Config> SavedCell<T> {
     }
 
     pub fn save(&self, new_frame: SavedFrame<T>) {
+        debug_assert!(new_frame.data.is_some());
         let mut saved_frame = self.0.lock();
-        debug_assert!(new_frame.frame == saved_frame.frame);
-        *saved_frame = new_frame;
+        saved_frame.data = new_frame.data;
+        saved_frame.checksum = new_frame.checksum;
     }
 
     pub fn load(&self) -> T::State {
@@ -91,36 +92,40 @@ pub(crate) struct SavedState<T>
 where
     T: Config,
 {
-    frames: HashMap<Frame, SavedCell<T>>,
+    head: usize,
+    frames: [SavedCell<T>; MAX_PREDICTION_FRAMES + 2],
 }
 
 impl<T: Config> SavedState<T> {
-    pub fn get(&mut self, frame: Frame) -> SavedCell<T> {
-        if let Some(cell) = self.frames.get(&frame) {
-            cell.clone()
-        } else {
-            let saved_frame = SavedCell::default();
-            saved_frame.reset(frame);
-            self.frames.insert(frame, saved_frame.clone());
-            saved_frame
-        }
+    pub fn push(&mut self, frame: Frame) -> SavedCell<T> {
+        let saved_frame = self.frames[self.head].clone();
+        saved_frame.reset(frame);
+        self.head = (self.head + 1) % self.frames.len();
+        debug_assert!(self.head < self.frames.len());
+        saved_frame
     }
 
     /// Finds a saved state for a frame.
-    pub fn find(&self, frame: Frame) -> Option<SavedCell<T>> {
-        self.frames.get(&frame).cloned()
+    fn find_index(&self, frame: Frame) -> Option<usize> {
+        self.frames
+            .iter()
+            .enumerate()
+            .find(|(i, saved)| saved.0.lock().frame == frame)
+            .map(|(i, _)| i)
     }
 
-    pub fn discard_confirmed_frames(&mut self, frame: Frame) {
-        self.frames.retain(|saved_frame, _| *saved_frame >= frame);
+    pub fn reset_to(&mut self, frame: Frame) -> SavedCell<T> {
+        self.head = self
+            .find_index(frame)
+            .unwrap_or_else(|| panic!("Could not find saved frame index for frame: {}", frame));
+        self.frames[self.head].clone()
     }
 
     /// Peeks at the latest saved frame in the queue.
     pub fn latest(&self) -> Option<SavedCell<T>> {
         self.frames
             .iter()
-            .max_by_key(|(k, _)| *k)
-            .map(|(_, v)| v)
+            .max_by_key(|saved| saved.0.lock().frame)
             .cloned()
     }
 }
@@ -128,8 +133,7 @@ impl<T: Config> SavedState<T> {
 impl<T: Config> Default for SavedState<T> {
     fn default() -> Self {
         Self {
-            // This should lead the first one saved frame to be at
-            // index 0.
+            head: 0,
             frames: Default::default(),
         }
     }
@@ -182,7 +186,6 @@ impl<T: Config> Sync<T> {
     pub fn set_last_confirmed_frame(&mut self, frame: Frame) {
         self.last_confirmed_frame = frame;
         if frame > 0 {
-            self.saved_state.discard_confirmed_frames(frame - 1);
             for queue in self.input_queues.iter_mut() {
                 queue.discard_confirmed_frames(frame - 1);
             }
@@ -247,15 +250,18 @@ impl<T: Config> Sync<T> {
     }
 
     pub fn synchronize_inputs(&mut self) -> GameInput<T::Input> {
-        let mut output: GameInput<T::Input> = Default::default();
-        output.frame = self.frame_count();
+        let mut output = GameInput::<T::Input> {
+            frame: self.frame_count,
+            ..Default::default()
+        };
         for idx in 0..self.config.player_count {
             if self.is_disconnected(idx) {
                 output.disconnected |= 1 << idx;
             } else {
-                let frame_count = self.frame_count();
-                let confirmed = self.input_queues[idx].get_input(frame_count);
-                output.inputs[idx] = confirmed.unwrap().input;
+                output.inputs[idx] = self.input_queues[idx]
+                    .get_input(self.frame_count)
+                    .unwrap()
+                    .input;
             }
         }
         output
@@ -278,17 +284,16 @@ impl<T: Config> Sync<T> {
             return;
         }
 
-        let cell = self
-            .saved_state
-            .find(frame)
-            .unwrap_or_else(|| panic!("Could not find saved frame index for frame: {}", frame));
+        let cell = self.saved_state.reset_to(frame);
+        self.frame_count = cell.0.lock().frame;
         commands.push(Command::Load(LoadState::<T> { cell }));
 
-        self.frame_count = frame;
+        self.saved_state.head += 1;
+        self.saved_state.head %= self.saved_state.frames.len();
     }
 
     pub fn save_current_frame(&mut self, commands: &mut Commands<T>) {
-        let cell = self.saved_state.get(self.frame_count);
+        let cell = self.saved_state.push(self.frame_count);
         commands.push(Command::Save(SaveState::<T> {
             cell,
             frame: self.frame_count,

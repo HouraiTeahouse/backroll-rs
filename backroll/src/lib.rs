@@ -32,6 +32,7 @@ fn is_null(frame: Frame) -> bool {
 pub struct PlayerHandle(pub usize);
 
 /// Players within a Backroll session.
+#[derive(Clone)]
 pub enum Player {
     /// The local player. Backroll currently only supports one local player per machine.
     Local,

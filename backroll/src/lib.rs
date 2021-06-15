@@ -46,6 +46,13 @@ impl Player {
     }
 }
 
+impl Default for Player {
+    fn default() -> Self {
+        Self::Local
+    }
+
+}
+
 /// Compile time parameterization for Backroll sessions.
 pub trait Config: 'static {
     /// The input type for a Backroll session. This is the only game-related data

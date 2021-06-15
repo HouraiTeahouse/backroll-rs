@@ -377,11 +377,12 @@ impl BackrollAppBuilder for AppBuilder {
         self
     }
 
-    fn with_rollback_run_criteria<T, S>(&mut self, run_criteria: S) -> &mut Self
+    fn with_rollback_run_criteria<T, S>(&mut self, mut run_criteria: S) -> &mut Self
     where
         T: backroll::Config,
         S: System<In = (), Out = ShouldRun>,
     {
+        run_criteria.initialize(self.world_mut());
         let stage = self
             .app
             .schedule

@@ -317,7 +317,7 @@ pub trait BackrollAppBuilder {
     /// [RunCriteria]: bevy_ecs::schedule::RunCriteria
     /// [BackrollStage]: self::BackrollStage
     /// [FixedTimestep]: bevy_core::FixedTimestep
-    fn with_rollback_run_citeria<T, S>(&mut self, system: S) -> &mut Self
+    fn with_rollback_run_criteria<T, S>(&mut self, system: S) -> &mut Self
     where
         T: backroll::Config,
         S: System<In = (), Out = ShouldRun>;
@@ -377,7 +377,7 @@ impl BackrollAppBuilder for AppBuilder {
         self
     }
 
-    fn with_rollback_run_citeria<T, S>(&mut self, run_criteria: S) -> &mut Self
+    fn with_rollback_run_criteria<T, S>(&mut self, run_criteria: S) -> &mut Self
     where
         T: backroll::Config,
         S: System<In = (), Out = ShouldRun>,

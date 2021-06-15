@@ -292,24 +292,24 @@ impl<T: Config + Send + Sync> Default for BackrollPlugin<T> {
 pub trait BackrollAppBuilder {
     /// Sets the imput sampler system for Backroll. This is required. Attempting to start
     /// a Backroll session without setting this will result in a panic.
-    fn with_input_sampler_system<T: backroll::Config>(
-        &mut self,
-        system: impl System<In = PlayerHandle, Out = T::Input> + Send + Sync + 'static,
-    ) -> &mut Self;
+    fn with_input_sampler_system<T, S>(&mut self, system: S) -> &mut Self
+    where
+        T: backroll::Config,
+        S: System<In = PlayerHandle, Out = T::Input> + Send + Sync + 'static;
 
     /// Sets the world save system for Backroll. This is required. Attempting to start a
     /// Backroll session without setting this will result in a panic.
-    fn with_world_save_system<T: backroll::Config>(
-        &mut self,
-        system: impl System<In = (), Out = T::State> + Send + Sync + 'static,
-    ) -> &mut Self;
+    fn with_world_save_system<T, S>(&mut self, system: S) -> &mut Self
+    where
+        T: backroll::Config,
+        S: System<In = (), Out = T::State> + Send + Sync + 'static;
 
     /// Sets the world load system for Backroll. This is required. Attempting to start a
     /// Backroll session without setting this will result in a panic.
-    fn with_world_load_system<T: backroll::Config>(
-        &mut self,
-        system: impl System<In = T::State, Out = ()> + Send + Sync + 'static,
-    ) -> &mut Self;
+    fn with_world_load_system<T, S>(&mut self, system: S) -> &mut Self
+    where
+        T: backroll::Config,
+        S: System<In = T::State, Out = ()> + Send + Sync + 'static;
 
     /// Sets the [RunCriteria] for the [BackrollStage]. By default this uses a [FixedTimestep]
     /// set to 60 ticks per second.
@@ -317,16 +317,16 @@ pub trait BackrollAppBuilder {
     /// [RunCriteria]: bevy_ecs::schedule::RunCriteria
     /// [BackrollStage]: self::BackrollStage
     /// [FixedTimestep]: bevy_core::FixedTimestep
-    fn with_rollback_run_citeria<T: backroll::Config>(
-        &mut self,
-        system: impl System<In = (), Out = ShouldRun>,
-    ) -> &mut Self;
+    fn with_rollback_run_citeria<T, S>(&mut self, system: S) -> &mut Self
+    where
+        T: backroll::Config,
+        S: System<In = (), Out = ShouldRun>;
 
     /// Adds a system to the Backroll stage.
-    fn with_rollback_system<T: backroll::Config>(
-        &mut self,
-        system: impl Into<SystemDescriptor>,
-    ) -> &mut Self;
+    fn with_rollback_system<T, S>(&mut self, system: S) -> &mut Self
+    where
+        T: backroll::Config,
+        S: Into<SystemDescriptor>;
 
     /// Adds a [SystemSet] to the BackrollStage.
     ///
@@ -335,10 +335,11 @@ pub trait BackrollAppBuilder {
 }
 
 impl BackrollAppBuilder for AppBuilder {
-    fn with_input_sampler_system<T: backroll::Config>(
-        &mut self,
-        system: impl System<In = PlayerHandle, Out = T::Input> + Send + Sync + 'static,
-    ) -> &mut Self {
+    fn with_input_sampler_system<T, S>(&mut self, system: S) -> &mut Self
+    where
+        T: backroll::Config,
+        S: System<In = PlayerHandle, Out = T::Input> + Send + Sync + 'static,
+    {
         let stage = self
             .app
             .schedule
@@ -348,10 +349,11 @@ impl BackrollAppBuilder for AppBuilder {
         self
     }
 
-    fn with_world_save_system<T: backroll::Config>(
-        &mut self,
-        system: impl System<In = (), Out = T::State> + Send + Sync + 'static,
-    ) -> &mut Self {
+    fn with_world_save_system<T, S>(&mut self, system: S) -> &mut Self
+    where
+        T: backroll::Config,
+        S: System<In = (), Out = T::State> + Send + Sync + 'static,
+    {
         let stage = self
             .app
             .schedule
@@ -361,10 +363,11 @@ impl BackrollAppBuilder for AppBuilder {
         self
     }
 
-    fn with_world_load_system<T: backroll::Config>(
-        &mut self,
-        system: impl System<In = T::State, Out = ()> + Send + Sync + 'static,
-    ) -> &mut Self {
+    fn with_world_load_system<T, S>(&mut self, system: S) -> &mut Self
+    where
+        T: backroll::Config,
+        S: System<In = T::State, Out = ()> + Send + Sync + 'static,
+    {
         let stage = self
             .app
             .schedule
@@ -374,10 +377,11 @@ impl BackrollAppBuilder for AppBuilder {
         self
     }
 
-    fn with_rollback_run_citeria<T: backroll::Config>(
-        &mut self,
-        run_criteria: impl System<In = (), Out = ShouldRun>,
-    ) -> &mut Self {
+    fn with_rollback_run_citeria<T, S>(&mut self, run_criteria: S) -> &mut Self
+    where
+        T: backroll::Config,
+        S: System<In = (), Out = ShouldRun>,
+    {
         let stage = self
             .app
             .schedule
@@ -387,10 +391,11 @@ impl BackrollAppBuilder for AppBuilder {
         self
     }
 
-    fn with_rollback_system<T: backroll::Config>(
-        &mut self,
-        system: impl Into<SystemDescriptor>,
-    ) -> &mut Self {
+    fn with_rollback_system<T, S>(&mut self, system: S) -> &mut Self
+    where
+        T: backroll::Config,
+        S: Into<SystemDescriptor>,
+    {
         let stage = self
             .app
             .schedule

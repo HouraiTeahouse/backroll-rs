@@ -335,11 +335,12 @@ pub trait BackrollAppBuilder {
 }
 
 impl BackrollAppBuilder for AppBuilder {
-    fn with_input_sampler_system<T, S>(&mut self, system: S) -> &mut Self
+    fn with_input_sampler_system<T, S>(&mut self, mut system: S) -> &mut Self
     where
         T: backroll::Config,
         S: System<In = PlayerHandle, Out = T::Input> + Send + Sync + 'static,
     {
+        system.initialize(self.world_mut());
         let stage = self
             .app
             .schedule
@@ -349,11 +350,12 @@ impl BackrollAppBuilder for AppBuilder {
         self
     }
 
-    fn with_world_save_system<T, S>(&mut self, system: S) -> &mut Self
+    fn with_world_save_system<T, S>(&mut self, mut system: S) -> &mut Self
     where
         T: backroll::Config,
         S: System<In = (), Out = T::State> + Send + Sync + 'static,
     {
+        system.initialize(self.world_mut());
         let stage = self
             .app
             .schedule
@@ -363,11 +365,12 @@ impl BackrollAppBuilder for AppBuilder {
         self
     }
 
-    fn with_world_load_system<T, S>(&mut self, system: S) -> &mut Self
+    fn with_world_load_system<T, S>(&mut self, mut system: S) -> &mut Self
     where
         T: backroll::Config,
         S: System<In = T::State, Out = ()> + Send + Sync + 'static,
     {
+        system.initialize(self.world_mut());
         let stage = self
             .app
             .schedule

@@ -50,7 +50,6 @@ impl Default for Player {
     fn default() -> Self {
         Self::Local
     }
-
 }
 
 /// Compile time parameterization for Backroll sessions.

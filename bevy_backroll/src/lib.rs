@@ -210,7 +210,9 @@ impl<T: Config> Stage for BackrollStage<T> {
                 return;
             };
 
+            world.insert_resource(GameInput::<T::Input>::default());
             self.run_commands(session.poll(), world);
+            world.remove_resource::<GameInput<T::Input>>();
 
             if self.staller.should_stall() {
                 continue;

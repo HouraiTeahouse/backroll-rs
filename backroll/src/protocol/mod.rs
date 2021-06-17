@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use std::num::Wrapping;
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::{debug, error, info};
+use tracing::{debug, error};
 
 pub(crate) use event::Event;
 
@@ -406,7 +406,7 @@ impl<T: Config> Peer<T> {
                         let mut state = self.state.write();
                         if !state.is_interrupted() && (last_recv_time + notify_start < now) {
                             state.interrupt();
-                            info!("Endpoint has stopped receiving packets for {} ms.  Sending notification.",
+                            debug!("Endpoint has stopped receiving packets for {} ms.  Sending notification.",
                                   notify_start.as_millis());
                             self.push_event(Event::<T::Input>::NetworkInterrupted {
                                 disconnect_timeout: timeout - notify_start
@@ -415,7 +415,7 @@ impl<T: Config> Peer<T> {
                     }
 
                     if last_recv_time + timeout < now {
-                        info!(
+                        debug!(
                             "Endpoint has stopped receiving packets for {} ms. Disconnecting.",
                             timeout.as_millis()
                         );
@@ -438,7 +438,7 @@ impl<T: Config> Peer<T> {
         let now = UnixMillis::now();
         if let Some(last_send_time) = self.stats.read().last_send_time {
             if last_send_time + next_interval < now {
-                info!(
+                debug!(
                     "No luck syncing after {:?} ms... Re-queueing sync packet.",
                     next_interval
                 );
@@ -522,7 +522,7 @@ impl<T: Config> Peer<T> {
                 // filter out out-of-order packets
                 let skipped = seq - next_recv_seq;
                 if skipped > MAX_SEQ_DISTANCE {
-                    info!(
+                    debug!(
                         "dropping out of order packet (seq: {}, last seq: {})",
                         seq, next_recv_seq
                     );
@@ -604,7 +604,7 @@ impl<T: Config> Peer<T> {
         let SyncRequest { random } = data;
         if let PeerState::Running { remote_magic } = *self.state.read() {
             if magic != remote_magic {
-                info!(
+                debug!(
                     "Ignoring sync request from unknown endpoint ({} != {:?}).",
                     magic, remote_magic
                 );
@@ -619,7 +619,7 @@ impl<T: Config> Peer<T> {
         let mut state = self.state.write();
         if let Some(random) = state.random() {
             if data.random != random {
-                info!("sync reply {} != {}.  Keep looking...", data.random, random);
+                debug!("sync reply {} != {}.  Keep looking...", data.random, random);
                 return Err(PeerError::InvalidMessage);
             }
         }
@@ -635,14 +635,14 @@ impl<T: Config> Peer<T> {
                 ref mut roundtrips_remaining,
                 ..
             } => {
-                info!(
+                debug!(
                     "Checking sync state ({} round trips remaining).",
                     *roundtrips_remaining
                 );
                 debug_assert!(*roundtrips_remaining > 0);
                 *roundtrips_remaining -= 1;
                 if *roundtrips_remaining == 0 {
-                    info!("Synchronized queue {}!", self.queue);
+                    debug!("Synchronized queue {}!", self.queue);
                     self.push_event(Event::<T::Input>::Synchronized)?;
                     self.stats.write().last_input_packet_recv_time = UnixMillis::now();
                     *state = PeerState::Running {
@@ -677,7 +677,7 @@ impl<T: Config> Peer<T> {
             }
             PeerState::Running { remote_magic } if magic == remote_magic => Ok(()),
             _ => {
-                info!("Ignoring SyncReply while not syncing.");
+                debug!("Ignoring SyncReply while not syncing.");
                 Err(PeerError::InvalidMessage)
             }
         }

@@ -9,7 +9,7 @@ use parking_lot::{Mutex, RwLock};
 use std::collections::HashMap;
 use std::ops::Deref;
 use std::sync::Arc;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 const MAX_PREDICTION_FRAMES: usize = 8;
 
@@ -215,7 +215,7 @@ impl<T: Config> Sync<T> {
             return Err(BackrollError::ReachedPredictionBarrier);
         }
 
-        info!(
+        debug!(
             "Sending undelayed local frame {} to queue {}.",
             self.frame_count, queue
         );
@@ -280,7 +280,7 @@ impl<T: Config> Sync<T> {
     pub fn load_frame(&mut self, commands: &mut Commands<T>, frame: Frame) {
         // find the frame in question
         if frame == self.frame_count {
-            info!("Skipping NOP.");
+            debug!("Skipping NOP.");
             return;
         }
 
@@ -304,7 +304,7 @@ impl<T: Config> Sync<T> {
         let frame_count = self.frame_count;
         let count = self.frame_count - seek_to;
 
-        info!("Catching up");
+        debug!("Catching up");
         self.rolling_back = true;
 
         //  Flush our input queue and load the last frame.
@@ -320,7 +320,6 @@ impl<T: Config> Sync<T> {
         debug_assert!(self.frame_count == frame_count);
 
         self.rolling_back = false;
-        info!("---");
     }
 
     pub fn check_simulation_consistency(&self) -> Option<Frame> {

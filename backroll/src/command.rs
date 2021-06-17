@@ -7,7 +7,7 @@ use std::{
     collections::hash_map::DefaultHasher,
     hash::{Hash, Hasher},
 };
-use tracing::{error, info};
+use tracing::{debug, error};
 
 /// A singular command for a Backroll session client to execute.
 ///
@@ -85,7 +85,7 @@ impl<T: Config> SaveState<T> {
     }
 
     fn save_state(self, state: T::State, checksum: Option<u64>) {
-        info!(
+        debug!(
             "=== Saved frame state {} (checksum: {:08x}).",
             self.frame,
             checksum.unwrap_or(0)

@@ -5,7 +5,7 @@ use std::convert::TryFrom;
 use std::ops::{Add, Sub};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tracing::info;
+use tracing::debug;
 
 const FRAME_WINDOW_SIZE: usize = 40;
 const MIN_UNIQUE_FRAMES: usize = 10;
@@ -67,7 +67,7 @@ impl<T: PartialEq> TimeSync<T> {
         // sleep for.
         let sleep_frames = (((radvantage - advantage) / 2.0) + 0.5) as Frame;
 
-        info!(
+        debug!(
             "iteration {}:  sleep frames is {}",
             sync.iteration, sleep_frames
         );
@@ -85,7 +85,7 @@ impl<T: PartialEq> TimeSync<T> {
         if require_idle_input {
             for idx in 0..sync.last_inputs.len() {
                 if sync.last_inputs[idx] != sync.last_inputs[0] {
-                    info!(
+                    debug!(
                         "iteration {}: rejecting due to input stuff at position {}...!!!",
                         sync.iteration, idx
                     );

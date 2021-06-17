@@ -12,7 +12,7 @@ use async_channel::TryRecvError;
 use parking_lot::RwLock;
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::{debug, info};
+use tracing::debug;
 
 const RECOMMENDATION_INTERVAL: Frame = 240;
 const DEFAULT_FRAME_DELAY: Frame = 3;
@@ -255,7 +255,7 @@ impl<T: Config> P2PSessionRef<T> {
             // of the game. All other players need to be disconnected.
             // that if the endpoint is not initalized, this must be the local player.
             let current_frame = self.sync.frame_count();
-            info!(
+            debug!(
                 "Disconnecting local player {} at frame {} by user request.",
                 queue, last_frame
             );
@@ -265,7 +265,7 @@ impl<T: Config> P2PSessionRef<T> {
                 }
             }
         } else {
-            info!(
+            debug!(
                 "Disconnecting queue {} at frame {} by user request.",
                 queue, last_frame
             );
@@ -279,7 +279,7 @@ impl<T: Config> P2PSessionRef<T> {
 
         self.players[queue].disconnect();
 
-        info!("Changing queue {} local connect status for last frame from {} to {} on disconnect request (current: {}).",
+        debug!("Changing queue {} local connect status for last frame from {} to {} on disconnect request (current: {}).",
                queue, self.local_connect_status[queue].read().last_frame, syncto, frame_count);
 
         {
@@ -289,12 +289,12 @@ impl<T: Config> P2PSessionRef<T> {
         }
 
         if syncto < frame_count {
-            info!(
+            debug!(
                 "Adjusting simulation to account for the fact that {} disconnected @ {}.",
                 queue, syncto
             );
             self.sync.adjust_simulation(commands, syncto);
-            info!("Finished adjusting simulation.");
+            debug!("Finished adjusting simulation.");
         }
 
         commands.push(Command::Event(Event::Disconnected(PlayerHandle(queue))));
@@ -421,10 +421,10 @@ impl<T: Config> P2PSessionRef<T> {
             self.poll_n_players(commands)
         };
 
-        info!("last confirmed frame in p2p backend is {}.", min_frame);
+        debug!("last confirmed frame in p2p backend is {}.", min_frame);
         if min_frame >= 0 {
             debug_assert!(min_frame != Frame::MAX);
-            info!("setting confirmed frame in sync to {}.", min_frame);
+            debug!("setting confirmed frame in sync to {}.", min_frame);
             self.sync.set_last_confirmed_frame(min_frame);
         }
 
@@ -458,15 +458,15 @@ impl<T: Config> P2PSessionRef<T> {
             if !local_status.disconnected {
                 min_frame = std::cmp::min(local_status.last_frame, min_frame);
             }
-            info!(
+            debug!(
                 "local endp: connected = {}, last_received = {}, total_min_confirmed = {}.",
                 !local_status.disconnected, local_status.last_frame, min_frame
             );
             if !queue_connected && !local_status.disconnected {
-                info!("disconnecting player {} by remote request.", i);
+                debug!("disconnecting player {} by remote request.", i);
                 self.disconnect_player_queue(commands, i, min_frame);
             }
-            info!("min_frame = {}.", min_frame);
+            debug!("min_frame = {}.", min_frame);
         }
         min_frame
     }
@@ -477,7 +477,7 @@ impl<T: Config> P2PSessionRef<T> {
         for queue in 0..self.players.len() {
             let mut queue_connected = true;
             let mut queue_min_confirmed = Frame::MAX;
-            info!("considering queue {}.", queue);
+            debug!("considering queue {}.", queue);
             for (i, player) in self.players.iter().enumerate() {
                 // we're going to do a lot of logic here in consideration of endpoint i.
                 // keep accumulating the minimum confirmed point for all n*n packets and
@@ -487,10 +487,10 @@ impl<T: Config> P2PSessionRef<T> {
                     let status = peer.get_peer_connect_status(queue);
                     queue_connected = queue_connected && !status.disconnected;
                     queue_min_confirmed = std::cmp::min(status.last_frame, queue_min_confirmed);
-                    info!("endpoint {}: connected = {}, last_received = {}, queue_min_confirmed = {}.", 
+                    debug!("endpoint {}: connected = {}, last_received = {}, queue_min_confirmed = {}.", 
                           i, queue_connected, status.last_frame, queue_min_confirmed);
                 } else {
-                    info!("endpoint {}: ignoring... not running.", i);
+                    debug!("endpoint {}: ignoring... not running.", i);
                 }
             }
 
@@ -499,7 +499,7 @@ impl<T: Config> P2PSessionRef<T> {
             if !local_status.disconnected {
                 queue_min_confirmed = std::cmp::min(local_status.last_frame, queue_min_confirmed);
             }
-            info!(
+            debug!(
                 "local endp: connected = {}, last_received = {}, queue_min_confirmed = {}.",
                 !local_status.disconnected, local_status.last_frame, queue_min_confirmed
             );
@@ -511,11 +511,11 @@ impl<T: Config> P2PSessionRef<T> {
                 // so, we need to re-adjust.  This can happen when we detect our own disconnect at frame n
                 // and later receive a disconnect notification for frame n-1.
                 if !local_status.disconnected || local_status.last_frame > queue_min_confirmed {
-                    info!("disconnecting queue {} by remote request.", queue);
+                    debug!("disconnecting queue {} by remote request.", queue);
                     self.disconnect_player_queue(commands, queue, queue_min_confirmed);
                 }
             }
-            info!("min_frame = {}.", min_frame);
+            debug!("min_frame = {}.", min_frame);
         }
         min_frame
     }
@@ -715,7 +715,7 @@ impl<T: Config> P2PSession<T> {
     pub fn advance_frame(&self) -> Commands<T> {
         let mut session_ref = self.0.write();
         let mut commands = Commands::<T>::default();
-        info!("End of frame ({})...", session_ref.sync.frame_count());
+        debug!("End of frame ({})...", session_ref.sync.frame_count());
         if !session_ref.synchronizing {
             session_ref.sync.increment_frame(&mut commands);
         }
@@ -760,7 +760,7 @@ impl<T: Config> P2PSession<T> {
             // of the game. All other players need to be disconnected.
             // that if the endpoint is not initalized, this must be the local player.
             let current_frame = session_ref.sync.frame_count();
-            info!(
+            debug!(
                 "Disconnecting local player {} at frame {} by user request.",
                 queue, last_frame
             );
@@ -770,7 +770,7 @@ impl<T: Config> P2PSession<T> {
                 }
             }
         } else {
-            info!(
+            debug!(
                 "Disconnecting queue {} at frame {} by user request.",
                 queue, last_frame
             );

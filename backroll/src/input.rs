@@ -1,6 +1,6 @@
 use crate::{BackrollError, Config, Frame, PlayerHandle, MAX_PLAYERS, MAX_ROLLBACK_FRAMES};
 use std::convert::TryFrom;
-use tracing::info;
+use tracing::debug;
 
 #[inline]
 fn previous_frame(offset: usize) -> usize {
@@ -150,7 +150,7 @@ impl<T: Config> InputQueue<T> {
     }
 
     pub fn last_confirmed_frame(&self) -> Frame {
-        info!("returning last confirmed frame {}.", self.last_added_frame);
+        debug!("returning last confirmed frame {}.", self.last_added_frame);
         self.last_added_frame
     }
 
@@ -169,7 +169,7 @@ impl<T: Config> InputQueue<T> {
             frame = std::cmp::min(frame, self.last_frame_requested)
         }
 
-        info!(
+        debug!(
             "discarding confirmed frames up to {} (last_added:{} length:{}).",
             frame, self.last_added_frame, self.length
         );
@@ -180,7 +180,7 @@ impl<T: Config> InputQueue<T> {
             let offset = frame - self.inputs[self.tail].frame + 1;
             let offset = usize::try_from(offset).unwrap();
 
-            info!("difference of {} frames.", offset);
+            debug!("difference of {} frames.", offset);
 
             self.tail = (self.tail + offset) % MAX_ROLLBACK_FRAMES;
             self.length -= offset;
@@ -192,7 +192,7 @@ impl<T: Config> InputQueue<T> {
             super::is_null(self.first_incorrect_frame) || frame <= self.first_incorrect_frame
         );
 
-        info!("resetting all prediction errors back to frame {}.", frame);
+        debug!("resetting all prediction errors back to frame {}.", frame);
 
         // There's nothing really to do other than reset our prediction
         // state and the incorrect frame counter...
@@ -210,7 +210,7 @@ impl<T: Config> InputQueue<T> {
     }
 
     pub fn get_input(&mut self, frame: Frame) -> FetchedInput<T::Input> {
-        info!("requesting input frame {:?}.", frame);
+        debug!("requesting input frame {:?}.", frame);
 
         // No one should ever try to grab any input when we have a prediction
         // error. Doing so means that we're just going further down the wrong
@@ -231,7 +231,7 @@ impl<T: Config> InputQueue<T> {
                 offset = (offset + self.tail) % MAX_ROLLBACK_FRAMES;
                 let input = self.inputs[offset].clone();
                 debug_assert!(input.frame == frame);
-                info!("returning confirmed frame number {}.", input.frame);
+                debug!("returning confirmed frame number {}.", input.frame);
                 return FetchedInput::Normal(input);
             }
 
@@ -239,13 +239,13 @@ impl<T: Config> InputQueue<T> {
             // to return a prediction frame.  Predict that the user will do the
             // same thing they did last time.
             if frame == 0 {
-                info!("basing new prediction frame from nothing, you're client wants frame 0.");
+                debug!("basing new prediction frame from nothing, you're client wants frame 0.");
                 self.prediction.clear();
             } else if super::is_null(self.last_added_frame) {
-                info!("basing new prediction frame from nothing, since we have no frames yet.");
+                debug!("basing new prediction frame from nothing, since we have no frames yet.");
                 self.prediction.clear();
             } else {
-                info!(
+                debug!(
                     "basing new prediction frame from previously added frame (frame: {}).",
                     self.inputs[previous_frame(self.head)].frame
                 );
@@ -259,7 +259,7 @@ impl<T: Config> InputQueue<T> {
         // frame number requested by the client, though.
         let mut prediction = self.prediction.clone();
         prediction.frame = frame;
-        info!(
+        debug!(
             "returning prediction frame number {} ({}).",
             frame, self.prediction.frame
         );
@@ -274,7 +274,7 @@ impl<T: Config> InputQueue<T> {
                 || input.frame == self.last_user_added_frame + 1
         );
         self.last_user_added_frame = input.frame;
-        info!("adding input frame number {} to queue.", input.frame);
+        debug!("adding input frame number {} to queue.", input.frame);
 
         // Move the queue head to the correct point in preparation to
         // input the frame into the queue.
@@ -289,7 +289,7 @@ impl<T: Config> InputQueue<T> {
     }
 
     fn add_delayed_input(&mut self, frame: Frame, input: FrameInput<T::Input>) {
-        info!("adding delayed input frame number {} to queue.", frame);
+        debug!("adding delayed input frame number {} to queue.", frame);
         debug_assert!(super::is_null(self.last_added_frame) || frame == self.last_added_frame + 1);
         debug_assert!(frame == 0 || self.inputs[previous_frame(self.head)].frame == frame - 1);
 
@@ -308,7 +308,7 @@ impl<T: Config> InputQueue<T> {
             // remember the first input which was incorrect so we can report it
             // in first_incorrect_frame()
             if super::is_null(self.first_incorrect_frame) && self.prediction != input {
-                info!("frame {} does not match prediction. marking error.", frame);
+                debug!("frame {} does not match prediction. marking error.", frame);
                 self.first_incorrect_frame = frame;
             }
 
@@ -319,7 +319,7 @@ impl<T: Config> InputQueue<T> {
             if self.prediction.frame == self.last_frame_requested
                 && super::is_null(self.first_incorrect_frame)
             {
-                info!("prediction is correct! dumping out of prediction mode.");
+                debug!("prediction is correct! dumping out of prediction mode.");
                 self.prediction.frame = super::NULL_FRAME;
             } else {
                 self.prediction.frame += 1;
@@ -329,7 +329,7 @@ impl<T: Config> InputQueue<T> {
     }
 
     fn advance_queue_head(&mut self, mut frame: Frame) -> Frame {
-        info!("advancing queue head to frame {}.", frame);
+        debug!("advancing queue head to frame {}.", frame);
         let mut expected_frame = if self.first_frame {
             0
         } else {
@@ -341,7 +341,7 @@ impl<T: Config> InputQueue<T> {
             // This can occur when the frame delay has dropped since the last
             // time we shoved a frame into the system.  In this case, there's
             // no room on the queue.  Toss it.
-            info!(
+            debug!(
                 "Dropping input frame {} (expected next frame to be {}).",
                 frame, expected_frame
             );
@@ -353,7 +353,7 @@ impl<T: Config> InputQueue<T> {
             // time we shoved a frame into the system.  We need to replicate the
             // last frame in the queue several times in order to fill the space
             // left.
-            info!(
+            debug!(
                 "Adding padding frame {} to account for change in frame delay.",
                 expected_frame
             );

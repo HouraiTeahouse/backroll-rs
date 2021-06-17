@@ -743,7 +743,7 @@ impl<T: Config> Peer<T> {
         // last frame they gave us plus some delta for the one-way packet
         // trip time.
         let remote_frame = self.input_decoder.last_decoded_frame()
-            + (stats.round_trip_time.as_secs() * TARGET_TPS) as i32;
+            + ((stats.round_trip_time.as_secs() / 2) * TARGET_TPS) as i32;
 
         // Our frame advantage is how many frames *behind* the other guy
         // we are.  Counter-intuative, I know.  It's an advantage because

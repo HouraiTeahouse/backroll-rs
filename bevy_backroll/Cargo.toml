@@ -2,8 +2,12 @@
 name = "bevy_backroll"
 version = "0.1.0"
 edition = "2018"
+authors = ["Hourai Teahouse Developers <contact@houraiteahouse.net>"]
+description = "A Bevy engine integration plugin for the backroll rollback networking library."
+repository = "https://github.com/HouraiTeahouse/backroll-rs"
+license = "ISC"
 
-# [package.metadata.docs.rs]
+[package.metadata.docs.rs]
 features = [ "docs-only" ]
 
 [features]
@@ -13,7 +17,7 @@ steam = ["bevy-steamworks", "backroll_transport_steam"]
 docs-only = ["steam", "backroll_transport_steam/docs-only"]
 
 [dependencies]
-backroll = { path = "../backroll", version = "0.1" }
+backroll = { path = "../backroll", version = "0.2" }
 bevy_ecs = "0.5"
 bevy_core = "0.5"
 bevy_tasks = "0.5"

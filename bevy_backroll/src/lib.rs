@@ -292,7 +292,7 @@ impl<T: Config + Send + Sync> Default for BackrollPlugin<T> {
 /// [AppBuilder]: bevy_app::AppBuilder
 /// [BackrollPlugin]: self::BackrollPlugin
 pub trait BackrollAppBuilder {
-    /// Sets the imput sampler system for Backroll. This is required. Attempting to start
+    /// Sets the input sampler system for Backroll. This is required. Attempting to start
     /// a Backroll session without setting this will result in a panic.
     fn with_input_sampler_system<T, S>(&mut self, system: S) -> &mut Self
     where

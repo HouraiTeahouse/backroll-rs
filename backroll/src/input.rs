@@ -1,4 +1,4 @@
-use crate::{BackrollError, Config, Frame, PlayerHandle, MAX_PLAYERS, MAX_ROLLBACK_FRAMES};
+use crate::{BackrollError, Frame, PlayerHandle, MAX_PLAYERS, MAX_ROLLBACK_FRAMES};
 use std::convert::TryFrom;
 use tracing::debug;
 
@@ -93,10 +93,7 @@ impl<T> FetchedInput<T> {
     }
 }
 
-pub struct InputQueue<T>
-where
-    T: Config,
-{
+pub struct InputQueue<T> {
     head: usize,
     tail: usize,
     length: usize,
@@ -109,11 +106,11 @@ where
 
     frame_delay: Frame,
 
-    inputs: [FrameInput<T::Input>; MAX_ROLLBACK_FRAMES],
-    prediction: FrameInput<T::Input>,
+    inputs: [FrameInput<T>; MAX_ROLLBACK_FRAMES],
+    prediction: FrameInput<T>,
 }
 
-impl<T: Config> InputQueue<T> {
+impl<T: bytemuck::Zeroable + Clone + PartialEq> InputQueue<T> {
     #[allow(clippy::uninit_assumed_init)]
     pub fn new(frame_delay: Frame) -> Self {
         // This is necessary as Default is not defined on arrays of more
@@ -123,8 +120,8 @@ impl<T: Config> InputQueue<T> {
         // Assuming Zeroable is implemented correctly, this should also never
         // panic, so a buffer will always correctly be allocated as a large
         // zeroed buffer.
-        let inputs: [FrameInput<T::Input>; MAX_ROLLBACK_FRAMES] = {
-            let mut inputs: [FrameInput<T::Input>; MAX_ROLLBACK_FRAMES] =
+        let inputs: [FrameInput<T>; MAX_ROLLBACK_FRAMES] = {
+            let mut inputs: [FrameInput<T>; MAX_ROLLBACK_FRAMES] =
                 unsafe { std::mem::MaybeUninit::uninit().assume_init() };
 
             for input in inputs.iter_mut() {
@@ -201,7 +198,7 @@ impl<T: Config> InputQueue<T> {
         self.last_frame_requested = super::NULL_FRAME;
     }
 
-    pub fn get_confirmed_input(&self, frame: Frame) -> Option<&FrameInput<T::Input>> {
+    pub fn get_confirmed_input(&self, frame: Frame) -> Option<&FrameInput<T>> {
         debug_assert!(
             super::is_null(self.first_incorrect_frame) || frame < self.first_incorrect_frame
         );
@@ -209,7 +206,7 @@ impl<T: Config> InputQueue<T> {
         self.inputs.get(offset)
     }
 
-    pub fn get_input(&mut self, frame: Frame) -> FetchedInput<T::Input> {
+    pub fn get_input(&mut self, frame: Frame) -> FetchedInput<T> {
         debug!("requesting input frame {:?}.", frame);
 
         // No one should ever try to grab any input when we have a prediction
@@ -266,7 +263,7 @@ impl<T: Config> InputQueue<T> {
         FetchedInput::Prediction(prediction)
     }
 
-    pub fn add_input(&mut self, input: FrameInput<T::Input>) -> Frame {
+    pub fn add_input(&mut self, input: FrameInput<T>) -> Frame {
         // These next two lines simply verify that inputs are passed in
         // sequentially by the user, regardless of frame delay.
         debug_assert!(
@@ -288,7 +285,7 @@ impl<T: Config> InputQueue<T> {
         new_frame
     }
 
-    fn add_delayed_input(&mut self, frame: Frame, input: FrameInput<T::Input>) {
+    fn add_delayed_input(&mut self, frame: Frame, input: FrameInput<T>) {
         debug!("adding delayed input frame number {} to queue.", frame);
         debug_assert!(super::is_null(self.last_added_frame) || frame == self.last_added_frame + 1);
         debug_assert!(frame == 0 || self.inputs[previous_frame(self.head)].frame == frame - 1);

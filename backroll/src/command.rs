@@ -25,13 +25,13 @@ where
     ///  new state struct and return it.
     ///
     /// Optionally, the client can compute a 64-bit checksum of the data and return it.
-    Save(SaveState<T>),
+    Save(SaveState<T::State>),
 
     /// Backroll will issue this command at the beginning of a rollback. The argument
     /// provided will be a previously saved state returned from the save_state function.  
     /// The client should make the current game state match the state contained in the
     /// argument.
-    Load(LoadState<T>),
+    Load(LoadState<T::State>),
 
     /// Clients should advance the game state by exactly one frame.  
     /// The provided inputs will contain the inputs you should use for the given frame.
@@ -46,15 +46,12 @@ where
 ///
 /// Consumers MUST save before the command is dropped. Failure to do so will
 /// result in a panic.
-pub struct SaveState<T>
-where
-    T: Config,
-{
+pub struct SaveState<T> {
     pub(crate) cell: SavedCell<T>,
     pub(crate) frame: Frame,
 }
 
-impl<T: Config> SaveState<T> {
+impl<T: Clone> SaveState<T> {
     /// Saves a single frame's state to the session's state buffer and uses
     /// the hash of the state as the checksum. This uses the
     /// [DefaultHasher] implementation.
@@ -62,7 +59,10 @@ impl<T: Config> SaveState<T> {
     /// This consumes the SaveState, saving multiple times is not allowed.
     ///
     /// [DefaultHasher]: std::collections::hash_map::DefaultHasher
-    pub fn save(self, state: T::State) {
+    pub fn save(self, state: T)
+    where
+        T: Hash,
+    {
         let mut hasher = DefaultHasher::new();
         state.hash(&mut hasher);
         self.save_with_hash(state, hasher.finish());
@@ -72,7 +72,7 @@ impl<T: Config> SaveState<T> {
     /// a saved checksum.
     ///
     /// This consumes the SaveState, saving multiple times is not allowed.
-    pub fn save_without_hash(self, state: T::State) {
+    pub fn save_without_hash(self, state: T) {
         self.save_state(state, None);
     }
 
@@ -80,11 +80,11 @@ impl<T: Config> SaveState<T> {
     /// provided checksum.
     ///
     /// This consumes the SaveState, saving multiple times is not allowed.
-    pub fn save_with_hash(self, state: T::State, checksum: u64) {
+    pub fn save_with_hash(self, state: T, checksum: u64) {
         self.save_state(state, Some(checksum));
     }
 
-    fn save_state(self, state: T::State, checksum: Option<u64>) {
+    fn save_state(self, state: T, checksum: Option<u64>) {
         debug!(
             "=== Saved frame state {} (checksum: {:08x}).",
             self.frame,
@@ -99,7 +99,7 @@ impl<T: Config> SaveState<T> {
     }
 }
 
-impl<T: Config> Drop for SaveState<T> {
+impl<T> Drop for SaveState<T> {
     fn drop(&mut self) {
         if !self.cell.is_valid() {
             error!("A SaveState command was dropped without saving a valid state.");
@@ -108,14 +108,11 @@ impl<T: Config> Drop for SaveState<T> {
 }
 
 /// A command for loading a saved state of the game.
-pub struct LoadState<T>
-where
-    T: Config,
-{
+pub struct LoadState<T> {
     pub(crate) cell: SavedCell<T>,
 }
 
-impl<T: Config> LoadState<T> {
+impl<T: Clone> LoadState<T> {
     /// Loads the saved state of the game.
     ///
     /// This will clone the internal copy ofthe save state. For games with
@@ -123,7 +120,7 @@ impl<T: Config> LoadState<T> {
     ///
     /// Note this consumes the LoadState, loading multiple times is
     /// not allowed.
-    pub fn load(self) -> T::State {
+    pub fn load(self) -> T {
         self.cell.load()
     }
 }

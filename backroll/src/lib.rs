@@ -70,7 +70,7 @@ pub trait Config: 'static {
     /// dropping any internal linked state via [Drop].
     ///
     /// [Drop]: std::ops::Drop
-    type State: Clone + Hash + Send + Sync + 'static;
+    type State: Clone + Send + Sync + 'static;
 }
 
 #[derive(Clone, Debug, Error)]

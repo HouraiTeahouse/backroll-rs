@@ -6,7 +6,7 @@ use crate::{
     BackrollError, BackrollResult, Config, Frame, NULL_FRAME,
 };
 use parking_lot::{Mutex, RwLock};
-use std::collections::HashMap;
+
 use std::ops::Deref;
 use std::sync::Arc;
 use tracing::{debug, warn};
@@ -19,16 +19,13 @@ pub struct PlayerConfig {
 }
 
 #[derive(Clone)]
-pub(crate) struct SavedFrame<T>
-where
-    T: Config,
-{
+pub(crate) struct SavedFrame<T> {
     pub frame: super::Frame,
-    pub data: Option<Box<T::State>>,
+    pub data: Option<Box<T>>,
     pub checksum: Option<u64>,
 }
 
-impl<T: Config> Default for SavedFrame<T> {
+impl<T> Default for SavedFrame<T> {
     fn default() -> Self {
         Self {
             frame: NULL_FRAME,
@@ -38,11 +35,9 @@ impl<T: Config> Default for SavedFrame<T> {
     }
 }
 
-pub(crate) struct SavedCell<T>(Arc<Mutex<SavedFrame<T>>>)
-where
-    T: Config;
+pub(crate) struct SavedCell<T>(Arc<Mutex<SavedFrame<T>>>);
 
-impl<T: Config> SavedCell<T> {
+impl<T> SavedCell<T> {
     pub fn reset(&self, frame: Frame) {
         *self.0.lock() = SavedFrame::<T> {
             frame,
@@ -57,7 +52,14 @@ impl<T: Config> SavedCell<T> {
         saved_frame.checksum = new_frame.checksum;
     }
 
-    pub fn load(&self) -> T::State {
+    pub fn is_valid(&self) -> bool {
+        let frame = self.0.lock();
+        frame.data.is_some() && !crate::is_null(frame.frame)
+    }
+}
+
+impl<T: Clone> SavedCell<T> {
+    pub fn load(&self) -> T {
         let frame = self.0.lock();
         debug!(
             "=== Loading frame info (checksum: {:08x}).",
@@ -69,34 +71,26 @@ impl<T: Config> SavedCell<T> {
             panic!("Trying to load data that wasn't saved to.")
         }
     }
-
-    pub fn is_valid(&self) -> bool {
-        let frame = self.0.lock();
-        frame.data.is_some() && !crate::is_null(frame.frame)
-    }
 }
 
-impl<T: Config> Default for SavedCell<T> {
+impl<T> Default for SavedCell<T> {
     fn default() -> Self {
         Self(Arc::new(Mutex::new(Default::default())))
     }
 }
 
-impl<T: Config> Clone for SavedCell<T> {
+impl<T> Clone for SavedCell<T> {
     fn clone(&self) -> Self {
         Self(self.0.clone())
     }
 }
 
-pub(crate) struct SavedState<T>
-where
-    T: Config,
-{
+pub(crate) struct SavedState<T> {
     head: usize,
     frames: [SavedCell<T>; MAX_PREDICTION_FRAMES + 2],
 }
 
-impl<T: Config> SavedState<T> {
+impl<T: Clone> SavedState<T> {
     pub fn push(&mut self, frame: Frame) -> SavedCell<T> {
         let saved_frame = self.frames[self.head].clone();
         saved_frame.reset(frame);
@@ -110,7 +104,7 @@ impl<T: Config> SavedState<T> {
         self.frames
             .iter()
             .enumerate()
-            .find(|(i, saved)| saved.0.lock().frame == frame)
+            .find(|(_, saved)| saved.0.lock().frame == frame)
             .map(|(i, _)| i)
     }
 
@@ -130,7 +124,7 @@ impl<T: Config> SavedState<T> {
     }
 }
 
-impl<T: Config> Default for SavedState<T> {
+impl<T> Default for SavedState<T> {
     fn default() -> Self {
         Self {
             head: 0,
@@ -143,8 +137,8 @@ pub(crate) struct Sync<T>
 where
     T: Config,
 {
-    saved_state: SavedState<T>,
-    input_queues: Vec<InputQueue<T>>,
+    saved_state: SavedState<T::State>,
+    input_queues: Vec<InputQueue<T::Input>>,
     config: PlayerConfig,
     rolling_back: bool,
 
@@ -273,7 +267,7 @@ impl<T: Config> Sync<T> {
         }
     }
 
-    pub fn get_last_saved_frame(&self) -> SavedCell<T> {
+    pub fn get_last_saved_frame(&self) -> SavedCell<T::State> {
         self.saved_state.latest().unwrap()
     }
 
@@ -286,7 +280,7 @@ impl<T: Config> Sync<T> {
 
         let cell = self.saved_state.reset_to(frame);
         self.frame_count = cell.0.lock().frame;
-        commands.push(Command::Load(LoadState::<T> { cell }));
+        commands.push(Command::Load(LoadState::<T::State> { cell }));
 
         self.saved_state.head += 1;
         self.saved_state.head %= self.saved_state.frames.len();
@@ -294,7 +288,7 @@ impl<T: Config> Sync<T> {
 
     pub fn save_current_frame(&mut self, commands: &mut Commands<T>) {
         let cell = self.saved_state.push(self.frame_count);
-        commands.push(Command::Save(SaveState::<T> {
+        commands.push(Command::Save(SaveState::<T::State> {
             cell,
             frame: self.frame_count,
         }));
@@ -341,7 +335,7 @@ impl<T: Config> Sync<T> {
         status.disconnected && status.last_frame < self.frame_count()
     }
 
-    fn create_queues(config: &PlayerConfig) -> Vec<InputQueue<T>> {
+    fn create_queues(config: &PlayerConfig) -> Vec<InputQueue<T::Input>> {
         (0..config.player_count)
             .map(|_| InputQueue::new(config.frame_delay))
             .collect()

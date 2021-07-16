@@ -243,7 +243,7 @@ mod test {
     #[test]
     pub fn test_random_data() {
         let mut rng = rand::thread_rng();
-        for i in 0..100 {
+        for _ in 0..100 {
             let encoder = InputEncoder::<Input>::default();
             let decoder = InputDecoder::<Input>::default();
             let mut buf: Vec<Input> = Vec::new();

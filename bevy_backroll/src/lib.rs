@@ -161,7 +161,8 @@ impl<T: Config> BackrollStage<T> {
                             .as_mut()
                             .expect("No world save system found. Please use AppBuilder::with_world_load_system")
                             .run((), world);
-                    save_state.save(state);
+                    // TODO(james7132): Find a way to hash the state here generically.
+                    save_state.save_without_hash(state);
                 }
                 Command::<T>::Load(load_state) => {
                     self.load_world_fn

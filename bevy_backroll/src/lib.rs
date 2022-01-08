@@ -253,8 +253,9 @@ impl<T: Config> Stage for BackrollStage<T> {
 
 /// A Bevy plugin that adds a [BackrollStage] to the app.
 ///
-/// All systems registered with the stage will run single threaded
-/// to avoid potentially introducing non-deterministic simulation results.
+/// **Note:** This stage does not enforce any specific system execution order.
+/// Users of this stage should ensure that their included systems have a strict
+/// deterministic execution order, otherwise simulation may result in desyncs.
 ///
 /// Also registers Backroll's [Event] as an event type, which the stage will
 /// forward to Bevy.
@@ -271,7 +272,7 @@ where
 impl<T: backroll::Config + Send + Sync> Plugin for BackrollPlugin<T> {
     fn build(&self, builder: &mut App) {
         let mut schedule = Schedule::default();
-        schedule.add_stage(BACKROLL_LOGIC_UPDATE, SystemStage::single_threaded());
+        schedule.add_stage(BACKROLL_LOGIC_UPDATE, SystemStage::parallel());
         builder.add_event::<backroll::Event>().add_stage_before(
             CoreStage::Update,
             BACKROLL_UPDATE,

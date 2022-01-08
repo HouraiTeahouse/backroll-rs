@@ -18,15 +18,15 @@ docs-only = ["steam", "backroll_transport_steam/docs-only"]
 
 [dependencies]
 backroll = { path = "../backroll", version = "0.2" }
-bevy_ecs = "0.5"
-bevy_core = "0.5"
-bevy_tasks = "0.5"
-bevy_app = "0.5"
-tracing = "0.1"
+bevy_ecs = "0.6"
+bevy_core = "0.6"
+bevy_tasks = "0.6"
+bevy_app = "0.6"
+bevy_log = "0.6"
 
 # Optional dependencies
 bevy-steamworks = { version = "0.1", optional = true }
 backroll_transport_steam = { path = "../backroll_transport_steam", version = "0.1", optional = true }
 
 [dev-dependencies]
-bevy = "0.5"
+bevy = "0.6"

@@ -24,14 +24,14 @@ use backroll::{
     command::{Command, Commands},
     Config, Event, GameInput, P2PSession, PlayerHandle,
 };
-use bevy_app::{AppBuilder, CoreStage, Events, Plugin};
+use bevy_app::{App, CoreStage, Events, Plugin};
 use bevy_core::FixedTimestep;
 use bevy_ecs::{
-    schedule::{Schedule, ShouldRun, Stage, SystemDescriptor, SystemSet, SystemStage},
+    schedule::{IntoSystemDescriptor, Schedule, ShouldRun, Stage, SystemSet, SystemStage},
     system::{Commands as BevyCommands, System},
     world::World,
 };
-use tracing::{debug, error};
+use bevy_log::{debug, error};
 
 #[cfg(feature = "steam")]
 mod steam;
@@ -156,18 +156,22 @@ impl<T: Config> BackrollStage<T> {
         for command in commands {
             match command {
                 Command::<T>::Save(save_state) => {
-                    let state =
-                        self.save_world_fn
-                            .as_mut()
-                            .expect("No world save system found. Please use AppBuilder::with_world_load_system")
-                            .run((), world);
+                    let state = self
+                        .save_world_fn
+                        .as_mut()
+                        .expect(
+                            "No world save system found. Please use App::with_world_load_system",
+                        )
+                        .run((), world);
                     // TODO(james7132): Find a way to hash the state here generically.
                     save_state.save_without_hash(state);
                 }
                 Command::<T>::Load(load_state) => {
                     self.load_world_fn
                         .as_mut()
-                        .expect("No world load system found. Please use AppBuilder::with_world_load_system")
+                        .expect(
+                            "No world load system found. Please use App::with_world_load_system",
+                        )
                         .run(load_state.load(), world);
                 }
                 Command::AdvanceFrame(inputs) => {
@@ -223,7 +227,9 @@ impl<T: Config> Stage for BackrollStage<T> {
                 let input = self
                     .input_sample_fn
                     .as_mut()
-                    .expect("No input sampler system found. Please use AppBuilder::with_input_sampler_system")
+                    .expect(
+                        "No input sampler system found. Please use App::with_input_sampler_system",
+                    )
                     .run(player_handle, world);
                 if let Err(err) = session.add_local_input(player_handle, input) {
                     error!(
@@ -263,7 +269,7 @@ where
     T: backroll::Config + Send + Sync;
 
 impl<T: backroll::Config + Send + Sync> Plugin for BackrollPlugin<T> {
-    fn build(&self, builder: &mut AppBuilder) {
+    fn build(&self, builder: &mut App) {
         let mut schedule = Schedule::default();
         schedule.add_stage(BACKROLL_LOGIC_UPDATE, SystemStage::single_threaded());
         builder.add_event::<backroll::Event>().add_stage_before(
@@ -287,12 +293,11 @@ impl<T: Config + Send + Sync> Default for BackrollPlugin<T> {
     }
 }
 
-/// Extension trait for [AppBuilder] for configuring [App]s using a [BackrollPlugin].
+/// Extension trait for configuring [App]s using a [BackrollPlugin].
 ///
 /// [App]: bevy_app::AppBuilder
-/// [AppBuilder]: bevy_app::AppBuilder
 /// [BackrollPlugin]: self::BackrollPlugin
-pub trait BackrollAppBuilder {
+pub trait BackrollApp {
     /// Sets the input sampler system for Backroll. This is required. Attempting to start
     /// a Backroll session without setting this will result in a panic.
     fn with_input_sampler_system<T, S>(&mut self, system: S) -> &mut Self
@@ -326,10 +331,10 @@ pub trait BackrollAppBuilder {
         S: System<In = (), Out = ShouldRun>;
 
     /// Adds a system to the Backroll stage.
-    fn with_rollback_system<T, S>(&mut self, system: S) -> &mut Self
+    fn with_rollback_system<T, S, U>(&mut self, system: S) -> &mut Self
     where
         T: backroll::Config,
-        S: Into<SystemDescriptor>;
+        S: IntoSystemDescriptor<U>;
 
     /// Adds a [SystemSet] to the BackrollStage.
     ///
@@ -337,15 +342,14 @@ pub trait BackrollAppBuilder {
     fn with_rollback_system_set<T: backroll::Config>(&mut self, system: SystemSet) -> &mut Self;
 }
 
-impl BackrollAppBuilder for AppBuilder {
+impl BackrollApp for App {
     fn with_input_sampler_system<T, S>(&mut self, mut system: S) -> &mut Self
     where
         T: backroll::Config,
         S: System<In = PlayerHandle, Out = T::Input> + Send + Sync + 'static,
     {
-        system.initialize(self.world_mut());
+        system.initialize(&mut self.world);
         let stage = self
-            .app
             .schedule
             .get_stage_mut::<BackrollStage<T>>(&BACKROLL_UPDATE)
             .expect("No BackrollStage found! Did you install the plugin?");
@@ -358,9 +362,8 @@ impl BackrollAppBuilder for AppBuilder {
         T: backroll::Config,
         S: System<In = (), Out = T::State> + Send + Sync + 'static,
     {
-        system.initialize(self.world_mut());
+        system.initialize(&mut self.world);
         let stage = self
-            .app
             .schedule
             .get_stage_mut::<BackrollStage<T>>(&BACKROLL_UPDATE)
             .expect("No BackrollStage found! Did you install the plugin?");
@@ -373,9 +376,8 @@ impl BackrollAppBuilder for AppBuilder {
         T: backroll::Config,
         S: System<In = T::State, Out = ()> + Send + Sync + 'static,
     {
-        system.initialize(self.world_mut());
+        system.initialize(&mut self.world);
         let stage = self
-            .app
             .schedule
             .get_stage_mut::<BackrollStage<T>>(&BACKROLL_UPDATE)
             .expect("No BackrollStage found! Did you install the plugin?");
@@ -388,9 +390,8 @@ impl BackrollAppBuilder for AppBuilder {
         T: backroll::Config,
         S: System<In = (), Out = ShouldRun>,
     {
-        run_criteria.initialize(self.world_mut());
+        run_criteria.initialize(&mut self.world);
         let stage = self
-            .app
             .schedule
             .get_stage_mut::<BackrollStage<T>>(&BACKROLL_UPDATE)
             .expect("No BackrollStage found! Did you install the plugin?");
@@ -398,13 +399,12 @@ impl BackrollAppBuilder for AppBuilder {
         self
     }
 
-    fn with_rollback_system<T, S>(&mut self, system: S) -> &mut Self
+    fn with_rollback_system<T, S, U>(&mut self, system: S) -> &mut Self
     where
         T: backroll::Config,
-        S: Into<SystemDescriptor>,
+        S: IntoSystemDescriptor<U>,
     {
         let stage = self
-            .app
             .schedule
             .get_stage_mut::<BackrollStage<T>>(&BACKROLL_UPDATE)
             .expect("No BackrollStage found! Did you install the plugin?");
@@ -416,7 +416,6 @@ impl BackrollAppBuilder for AppBuilder {
 
     fn with_rollback_system_set<T: backroll::Config>(&mut self, system: SystemSet) -> &mut Self {
         let stage = self
-            .app
             .schedule
             .get_stage_mut::<BackrollStage<T>>(&BACKROLL_UPDATE)
             .expect("No BackrollStage found! Did you install the plugin?");
@@ -445,7 +444,7 @@ pub trait BackrollCommands {
     fn end_backroll_session<T: backroll::Config>(&mut self);
 }
 
-impl<'a> BackrollCommands for BevyCommands<'a> {
+impl<'w, 's> BackrollCommands for BevyCommands<'w, 's> {
     fn start_backroll_session<T: backroll::Config>(&mut self, session: P2PSession<T>) {
         self.insert_resource(session);
     }

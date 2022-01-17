@@ -1,22 +1,32 @@
+#![warn(missing_docs)]
+
 //! A [Bevy](https://bevyengine.org) plugin that adds support for running
 //! [Backroll](https://crates.io/crates/backroll) sessions.
 //!
 //! Installing the plugin:
-//! ```rust no_run
+//! ```rust norun
+//! use bytemuck::*;
 //! use bevy::prelude::*;
 //! use bevy_backroll::*;
 //!
-//! // Create your Backroll Config
-//! pub struct BackrollConfig;
+//! // Create your Backroll input type
+//! #[derive(Clone, Copy, Pod, Zeroable)]
+//! pub struct BackrollInput {
+//!    // Input data...
+//! !  pub button_pressed: u64
+//! }
 //!
-//! impl backroll::Config for BackrollConfig {
-//!     type Input = i32;
-//!     type State = i32;
+//! fn sample_player_input(player: PlayerHandle) -> BackrollInput {
+//!    // Sample input data...
+//! !   BackrollInput {
+//! !      buttons_pressed: 0,
+//! !   }
 //! }
 //!
 //! fn main() {
 //!     App::build()
-//!         .add_plugin(BackrollPlugin::<BackrollConfig>::default())
+//!         .add_plugin(BackrollPlugin)
+//!         .register_rollback_input(sample_player_input)
 //!         .run();
 //! }
 //! ```
@@ -295,15 +305,20 @@ impl Plugin for BackrollPlugin {
 /// [App]: bevy_app::AppBuilder
 /// [BackrollPlugin]: self::BackrollPlugin
 pub trait BackrollApp {
-    fn register_rollback_component<T: Component + Clone>(&mut self) -> &mut Self;
-    fn register_rollback_resource<T: Clone + Send + Sync + 'static>(&mut self) -> &mut Self;
-
-    /// Sets the input sampler system for Backroll. This is required. Attempting to start
-    /// a Backroll session without setting this will result in a panic.
+    /// Sets the input sampler system for Backroll. This is required. Backroll will
+    /// not start without this being set.
     fn register_rollback_input<Input, S>(&mut self, system: S) -> &mut Self
     where
         Input: PartialEq + bytemuck::Pod + bytemuck::Zeroable + Send + Sync,
         S: System<In = PlayerHandle, Out = Input> + Send + Sync + 'static;
+
+    /// Registers a specific component type for saving into Backroll's save states.
+    /// Any game simulation state stored in components should be registered here.
+    fn register_rollback_component<T: Component + Clone>(&mut self) -> &mut Self;
+
+    /// Registers a specific resource type for saving into Backroll's save states.
+    /// Any game simulation state stored in resources should be registered here.
+    fn register_rollback_resource<T: Clone + Send + Sync + 'static>(&mut self) -> &mut Self;
 
     /// Sets the [RunCriteria] for the [BackrollStage]. By default this uses a [FixedTimestep]
     /// set to 60 ticks per second.

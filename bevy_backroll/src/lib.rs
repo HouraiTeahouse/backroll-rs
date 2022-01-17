@@ -32,7 +32,7 @@
 //! ```
 use backroll::{
     command::{Command, Commands},
-    Config, Event, GameInput, P2PSession, PlayerHandle,
+    Config, Event, GameInput, PlayerHandle,
 };
 use bevy_app::{App, CoreStage, Events, Plugin};
 use bevy_ecs::{
@@ -54,6 +54,10 @@ mod steam;
 pub use backroll;
 pub use id::*;
 use save_state::*;
+
+/// A [`P2PSession`] alias for bevy_backroll sessions. Uses [`BevyBackrollConfig`]
+/// as the config type.
+pub type P2PSession<Input> = backroll::P2PSession<BevyBackrollConfig<Input>>;
 
 /// The [SystemLabel] used by the [BackrollStage] added by [BackrollPlugin].
 ///
@@ -119,7 +123,8 @@ struct BackrollStagesRef {
 #[derive(Clone)]
 struct BackrollStages(Arc<Mutex<BackrollStagesRef>>);
 
-struct BevyBackrollConfig<Input> {
+/// The Backroll config type for bevy_backroll sessions.
+pub struct BevyBackrollConfig<Input> {
     _marker: PhantomData<Input>,
 }
 
@@ -235,9 +240,7 @@ where
                 return;
             }
 
-            let session = if let Some(session) =
-                world.get_resource_mut::<P2PSession<BevyBackrollConfig<Input>>>()
-            {
+            let session = if let Some(session) = world.get_resource_mut::<P2PSession<Input>>() {
                 session.clone()
             } else {
                 // No ongoing session, don't run.
@@ -448,21 +451,31 @@ pub trait BackrollCommands {
     /// can be accessed via [Res].
     ///
     /// [Res]: bevy_ecs::system::Res
-    fn start_backroll_session<T: backroll::Config>(&mut self, session: P2PSession<T>);
+    fn start_backroll_session<Input>(&mut self, session: P2PSession<Input>)
+    where
+        Input: PartialEq + bytemuck::Pod + bytemuck::Zeroable + Send + Sync;
 
     /// Ends the ongoing Backroll session. This will remove the associated resource and drop
     /// the session.
     ///
     /// Does nothing if there is no ongoing session.
-    fn end_backroll_session<T: backroll::Config>(&mut self);
+    fn end_backroll_session<Input>(&mut self)
+    where
+        Input: PartialEq + bytemuck::Pod + bytemuck::Zeroable + Send + Sync;
 }
 
 impl<'w, 's> BackrollCommands for BevyCommands<'w, 's> {
-    fn start_backroll_session<T: backroll::Config>(&mut self, session: P2PSession<T>) {
+    fn start_backroll_session<Input>(&mut self, session: P2PSession<Input>)
+    where
+        Input: PartialEq + bytemuck::Pod + bytemuck::Zeroable + Send + Sync,
+    {
         self.insert_resource(session);
     }
 
-    fn end_backroll_session<T: backroll::Config>(&mut self) {
-        self.remove_resource::<P2PSession<T>>();
+    fn end_backroll_session<Input>(&mut self)
+    where
+        Input: PartialEq + bytemuck::Pod + bytemuck::Zeroable + Send + Sync,
+    {
+        self.remove_resource::<P2PSession<Input>>();
     }
 }

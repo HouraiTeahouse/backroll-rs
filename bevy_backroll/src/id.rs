@@ -7,7 +7,7 @@ static NEXT_NETWORK_ID: AtomicU64 = AtomicU64::new(0);
 ///
 /// Registered network components will only be saved or loaded with this
 /// marker component present.
-/// 
+///
 /// Backed by a `u64` generated from a global [`AtomicU64`].
 #[derive(Debug, Component, Copy, Clone, Eq, Hash, PartialEq)]
 #[repr(transparent)]

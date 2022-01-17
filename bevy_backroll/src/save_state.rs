@@ -62,12 +62,10 @@ pub(crate) fn load_resource<T: Clone + Send + Sync + 'static>(
     let saved = save_state.0.state.get(&TypeId::of::<T>());
     match (saved, resource) {
         (Some(saved), Some(mut resource)) => {
-            let saved = saved.downcast_ref::<T>().unwrap();
-            *resource = saved.clone();
+            *resource = saved.downcast_ref::<T>().unwrap().clone();
         }
         (Some(saved), None) => {
-            let saved = saved.downcast_ref::<T>().unwrap();
-            commands.insert_resource(saved.clone());
+            commands.insert_resource(saved.downcast_ref::<T>().unwrap().clone());
         }
         (None, Some(_)) => {
             commands.remove_resource::<T>();
@@ -124,21 +122,22 @@ pub(crate) fn load_components<T: Component + Clone>(
     let slab = if let Some(slab) = saved {
         slab.downcast_ref::<SavedComponents<T>>().unwrap()
     } else {
-        for (entity, _, _) in query.iter() {
-            commands.entity(entity).remove::<T>();
+        for (entity, _, comp) in query.iter() {
+            if comp.is_some() {
+                commands.entity(entity).remove::<T>();
+            }
         }
         return;
     };
 
-    let mut components = slab.components.clone();
     // HACK: This is REALLY going to screw with any change detection on these types.
     for (entity, network_id, comp) in query.iter_mut() {
-        match (components.remove(&network_id), comp) {
+        match (slab.components.get(&network_id), comp) {
             (Some(saved), Some(mut comp)) => {
-                *comp = saved;
+                *comp = saved.clone();
             }
             (Some(saved), None) => {
-                commands.entity(entity).insert(saved);
+                commands.entity(entity).insert(saved.clone());
             }
             (None, Some(_)) => {
                 commands.entity(entity).remove::<T>();

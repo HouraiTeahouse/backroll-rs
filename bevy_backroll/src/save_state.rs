@@ -12,14 +12,19 @@ struct ComponentSlab<T: Clone> {
 
 /// A mutable builder for [`SaveState`]s.
 pub struct SaveStateBuilder {
-    components: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
+    state: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
 }
 
 impl SaveStateBuilder {
     pub fn new() -> Self {
         Self {
-            components: HashMap::new(),
+            state: HashMap::new(),
         }
+    }
+
+    pub(crate) fn save_resource<T: Clone + Send + Sync + 'static>(&mut self, resource: Res<T>) {
+        self.state
+            .insert(TypeId::of::<T>(), Box::new(resource.clone()));
     }
 
     pub(crate) fn save_components<T: Component + Clone>(&mut self, query: Query<(Entity, &T)>) {
@@ -29,7 +34,7 @@ impl SaveStateBuilder {
             entities.push(entity);
             components.push(component.clone());
         }
-        self.components.insert(
+        self.state.insert(
             TypeId::of::<T>(),
             Box::new(ComponentSlab {
                 components,
@@ -48,10 +53,22 @@ impl SaveStateBuilder {
 pub struct SaveState(Arc<SaveStateBuilder>);
 
 impl SaveState {
+    pub(crate) fn load_resource<T: Clone + Send + Sync + 'static>(&self, mut resource: ResMut<T>) {
+        // HACK: This is REALLY going to screw with any change detection on these types.
+        let saved = self
+            .0
+            .state
+            .get(&TypeId::of::<T>())
+            .unwrap()
+            .downcast_ref::<T>()
+            .unwrap();
+        *resource = saved.clone();
+    }
+
     pub(crate) fn load_components<T: Component + Clone>(&self, mut query: Query<&mut T>) {
         let slab = self
             .0
-            .components
+            .state
             .get(&TypeId::of::<T>())
             .unwrap()
             .downcast_ref::<ComponentSlab<T>>()
@@ -70,6 +87,21 @@ impl SaveState {
             }
         }
     }
+}
+
+// This disallows parallelization while saving. Is this design OK?
+pub(crate) fn save_resource<T: Clone + Send + Sync + 'static>(
+    mut save_state: ResMut<SaveStateBuilder>,
+    resource: Res<T>,
+) {
+    save_state.save_resource(resource);
+}
+
+pub(crate) fn load_resource<T: Clone + Send + Sync + 'static>(
+    save_state: Res<SaveState>,
+    resource: ResMut<T>,
+) {
+    save_state.load_resource(resource);
 }
 
 // This disallows parallelization while saving. Is this design OK?

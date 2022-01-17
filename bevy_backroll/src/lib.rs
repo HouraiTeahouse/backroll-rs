@@ -296,6 +296,7 @@ impl Plugin for BackrollPlugin {
 /// [BackrollPlugin]: self::BackrollPlugin
 pub trait BackrollApp {
     fn register_rollback_component<T: Component + Clone>(&mut self) -> &mut Self;
+    fn register_rollback_resource<T: Clone + Send + Sync + 'static>(&mut self) -> &mut Self;
 
     /// Sets the input sampler system for Backroll. This is required. Attempting to start
     /// a Backroll session without setting this will result in a panic.
@@ -312,21 +313,17 @@ pub trait BackrollApp {
     /// [FixedTimestep]: bevy_core::FixedTimestep
     fn with_rollback_run_criteria<Input, S>(&mut self, system: S) -> &mut Self
     where
-        Input: PartialEq + bytemuck::Pod + bytemuck::Zeroable + Send + Sync,
         S: System<In = (), Out = ShouldRun>;
 
     /// Adds a system to the Backroll stage.
-    fn add_rollback_system<Input, S, U>(&mut self, system: S) -> &mut Self
+    fn add_rollback_system<S, U>(&mut self, system: S) -> &mut Self
     where
-        Input: PartialEq + bytemuck::Pod + bytemuck::Zeroable + Send + Sync,
         S: IntoSystemDescriptor<U>;
 
     /// Adds a [SystemSet] to the BackrollStage.
     ///
     /// [SystemSet]: bevy_ecs::schedule::SystemSet
-    fn add_rollback_system_set<Input>(&mut self, system: SystemSet) -> &mut Self
-    where
-        Input: PartialEq + bytemuck::Pod + bytemuck::Zeroable + Send + Sync;
+    fn add_rollback_system_set(&mut self, system: impl Into<SystemSet>) -> &mut Self;
 }
 
 impl BackrollApp for App {
@@ -364,9 +361,24 @@ impl BackrollApp for App {
         self
     }
 
+    fn register_rollback_resource<T: Clone + Send + Sync + 'static>(&mut self) -> &mut Self {
+        {
+            let mut stages = self
+                .world
+                .get_resource::<BackrollStages>()
+                .expect("No BackrollStages found! Did you install the plugin?")
+                .0
+                .lock();
+
+            stages.load.add_system(load_resource::<T>);
+            stages.save.add_system(save_resource::<T>);
+        }
+
+        self
+    }
+
     fn with_rollback_run_criteria<Input, S>(&mut self, mut run_criteria: S) -> &mut Self
     where
-        Input: PartialEq + bytemuck::Pod + bytemuck::Zeroable + Send + Sync,
         S: System<In = (), Out = ShouldRun>,
     {
         run_criteria.initialize(&mut self.world);
@@ -379,9 +391,8 @@ impl BackrollApp for App {
         self
     }
 
-    fn add_rollback_system<Input, S, U>(&mut self, system: S) -> &mut Self
+    fn add_rollback_system<S, U>(&mut self, system: S) -> &mut Self
     where
-        Input: PartialEq + bytemuck::Pod + bytemuck::Zeroable + Send + Sync,
         S: IntoSystemDescriptor<U>,
     {
         self.world
@@ -394,17 +405,14 @@ impl BackrollApp for App {
         self
     }
 
-    fn add_rollback_system_set<Input>(&mut self, system: SystemSet) -> &mut Self
-    where
-        Input: PartialEq + bytemuck::Pod + bytemuck::Zeroable + Send + Sync,
-    {
+    fn add_rollback_system_set(&mut self, system: impl Into<SystemSet>) -> &mut Self {
         self.world
             .get_resource::<BackrollStages>()
             .expect("No BackrollStages found! Did you install the plugin?")
             .0
             .lock()
             .simulate
-            .add_system_set(system);
+            .add_system_set(system.into());
         self
     }
 }

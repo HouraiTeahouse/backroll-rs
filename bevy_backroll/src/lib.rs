@@ -46,11 +46,13 @@ use parking_lot::Mutex;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
+mod id;
 mod save_state;
 #[cfg(feature = "steam")]
 mod steam;
 
 pub use backroll;
+pub use id::*;
 use save_state::*;
 
 /// The [SystemLabel] used by the [BackrollStage] added by [BackrollPlugin].
@@ -109,6 +111,7 @@ impl FrameStaller {
 struct BackrollStagesRef {
     save: SystemStage,
     simulate: SystemStage,
+    before_load: SystemStage,
     load: SystemStage,
     run_criteria: Option<Box<dyn System<In = (), Out = ShouldRun>>>,
 }
@@ -171,11 +174,11 @@ where
     Input: PartialEq + bytemuck::Pod + bytemuck::Zeroable + Send + Sync,
 {
     fn run_commands(&mut self, commands: Commands<BevyBackrollConfig<Input>>, world: &mut World) {
+        let stage = world.get_resource::<BackrollStages>().unwrap().clone();
         for command in commands {
             match command {
                 Command::Save(save_state) => {
                     world.insert_resource(SaveStateBuilder::new());
-                    let stage = world.get_resource::<BackrollStages>().unwrap().clone();
                     stage.0.lock().save.run(world);
                     // TODO(james7132): Find a way to hash the state here generically.
                     save_state.save_without_hash(
@@ -184,14 +187,16 @@ where
                 }
                 Command::Load(load_state) => {
                     world.insert_resource(load_state.load());
-                    let stage = world.get_resource::<BackrollStages>().unwrap().clone();
-                    stage.0.lock().load.run(world);
+                    {
+                        let mut stage = stage.0.lock();
+                        stage.before_load.run(world);
+                        stage.load.run(world);
+                    }
                     world.remove_resource::<SaveState>();
                 }
                 Command::AdvanceFrame(inputs) => {
                     // Insert input via Resource
                     *world.get_resource_mut::<GameInput<Input>>().unwrap() = inputs;
-                    let stage = world.get_resource::<BackrollStages>().unwrap().clone();
                     stage.0.lock().simulate.run(world);
                 }
                 Command::Event(evt) => {
@@ -284,10 +289,15 @@ pub struct BackrollPlugin;
 
 impl Plugin for BackrollPlugin {
     fn build(&self, app: &mut App) {
+        let mut save = SystemStage::parallel();
+        save.add_system(save_network_ids);
+        let mut before_load = SystemStage::parallel();
+        before_load.add_system(sync_network_ids);
         app.add_event::<backroll::Event>()
             .insert_resource(BackrollStages(Arc::new(Mutex::new(BackrollStagesRef {
-                save: SystemStage::parallel(),
+                save,
                 simulate: SystemStage::parallel(),
+                before_load,
                 load: SystemStage::parallel(),
                 run_criteria: None,
             }))));

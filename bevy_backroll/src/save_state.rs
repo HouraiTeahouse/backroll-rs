@@ -3,6 +3,7 @@ use bevy_log::*;
 use std::any::*;
 use std::collections::HashMap;
 use std::sync::Arc;
+use parking_lot::Mutex;
 
 #[derive(Clone)]
 struct ComponentSlab<T: Clone> {
@@ -12,30 +13,36 @@ struct ComponentSlab<T: Clone> {
 
 /// A mutable builder for [`SaveState`]s.
 pub struct SaveStateBuilder {
-    state: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
+    state: Mutex<HashMap<TypeId, Box<dyn Any + Send + Sync>>>,
 }
 
 impl SaveStateBuilder {
     pub fn new() -> Self {
         Self {
-            state: HashMap::new(),
+            state: Mutex::new(HashMap::new()),
         }
     }
 
-    pub(crate) fn save_resource<T: Clone + Send + Sync + 'static>(&mut self, resource: Res<T>) {
+    pub(crate) fn save_resource<T: Clone + Send + Sync + 'static>(&self, resource: Res<T>) {
         self.state
+	.lock()
             .insert(TypeId::of::<T>(), Box::new(resource.clone()));
     }
 
-    pub(crate) fn save_components<T: Component + Clone>(&mut self, query: Query<(Entity, &T)>) {
-        let mut components = Vec::new();
-        let mut entities = Vec::new();
-        for (entity, component) in query.iter() {
+    pub(crate) fn save_components<T: Component + Clone>(&self, query: Query<(Entity, &T)>) {
+	let iter = query.iter();
+	let (_, max) = iter.size_hint();
+        let (mut components, mut entities) = if let Some(max) = max {
+		(Vec::with_capacity(max), Vec::with_capacity(max))
+	} else {
+		(Vec::new(), Vec::new())
+	};
+        for (entity, component) in iter {
             entities.push(entity);
             components.push(component.clone());
         }
-        self.state.insert(
-            TypeId::of::<T>(),
+        self.state.lock().insert(
+            TypeId::of::<ComponentSlab<T>>(),
             Box::new(ComponentSlab {
                 components,
                 entities,
@@ -44,20 +51,19 @@ impl SaveStateBuilder {
     }
 
     pub fn build(self) -> SaveState {
-        SaveState(Arc::new(self))
+        SaveState(Arc::new(self.state.into_inner()))
     }
 }
 
 /// A read only save state of a Bevy world.
 #[derive(Clone)]
-pub struct SaveState(Arc<SaveStateBuilder>);
+pub struct SaveState(Arc<HashMap<TypeId, Box<dyn Any + Send + Sync>>>);
 
 impl SaveState {
     pub(crate) fn load_resource<T: Clone + Send + Sync + 'static>(&self, mut resource: ResMut<T>) {
         // HACK: This is REALLY going to screw with any change detection on these types.
         let saved = self
             .0
-            .state
             .get(&TypeId::of::<T>())
             .unwrap()
             .downcast_ref::<T>()
@@ -68,8 +74,7 @@ impl SaveState {
     pub(crate) fn load_components<T: Component + Clone>(&self, mut query: Query<&mut T>) {
         let slab = self
             .0
-            .state
-            .get(&TypeId::of::<T>())
+            .get(&TypeId::of::<ComponentSlab<T>>())
             .unwrap()
             .downcast_ref::<ComponentSlab<T>>()
             .unwrap();
@@ -89,9 +94,8 @@ impl SaveState {
     }
 }
 
-// This disallows parallelization while saving. Is this design OK?
 pub(crate) fn save_resource<T: Clone + Send + Sync + 'static>(
-    mut save_state: ResMut<SaveStateBuilder>,
+    save_state: Res<SaveStateBuilder>,
     resource: Res<T>,
 ) {
     save_state.save_resource(resource);
@@ -106,7 +110,7 @@ pub(crate) fn load_resource<T: Clone + Send + Sync + 'static>(
 
 // This disallows parallelization while saving. Is this design OK?
 pub(crate) fn save_components<T: Component + Clone>(
-    mut save_state: ResMut<SaveStateBuilder>,
+    save_state: Res<SaveStateBuilder>,
     query: Query<(Entity, &T)>,
 ) {
     save_state.save_components(query);

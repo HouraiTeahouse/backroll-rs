@@ -4,7 +4,7 @@
 //! [Backroll](https://crates.io/crates/backroll) sessions.
 //!
 //! Installing the plugin:
-//! ```rust norun
+//! ```rust no_run
 //! use bytemuck::*;
 //! use bevy::prelude::*;
 //! use bevy_backroll::*;
@@ -134,12 +134,11 @@ impl<Input: PartialEq + bytemuck::Pod + bytemuck::Zeroable + Send + Sync> Config
 ///
 /// The stage will automatically handle Backroll commands by doing the following:
 ///  
-///  - [Command::Save]: Runs the system registered through [with_world_save_system]
-///    to make a save state of the [World].
-///  - [Command::Load]: Runs the system registered through [with_world_load_system]
-///    to restore a save state of the [World].
+///  - [Command::Save]: Saves an immutable copy of the components and resoures from the
+///    main app [`World`] into a save state.
+///  - [Command::Load]: Loads a prior saved World state into the main app [`World`].
 ///  - [Command::AdvanceFrame]: Injects the provided [GameInput] as a resource then
-///    runs all simulation based systems once (see: [with_rollback_system])
+///    runs all simulation based systems once (see: [add_rollback_system])
 ///  - [Command::Event]: Forwards all events to Bevy. Can be read out via [EventReader].
 ///    Automatically handles time synchronization by smoothly injecting stall frames when
 ///    ahead of remote players.
@@ -158,10 +157,8 @@ impl<Input: PartialEq + bytemuck::Pod + bytemuck::Zeroable + Send + Sync> Config
 /// [BackrollCommands]: self::BackrollCommands
 /// [FixedTimestep]: bevy_core::FixedTimestep
 /// [EventReader]: bevy_app::EventReader
-/// [with_world_save_system]: self::BackrollAppBuilder::with_world_save_system
-/// [with_world_load_system]: self::BackrollAppBuilder::with_world_save_system
-/// [with_rollback_system]: self::BackrollAppBuilder::with_rollback_system
-struct BackrollStage<Input>
+/// [add_rollback_system]: self::BackrollApp::add_rollback_system
+pub struct BackrollStage<Input>
 where
     Input: PartialEq + bytemuck::Pod + bytemuck::Zeroable + Send + Sync,
 {
@@ -302,7 +299,7 @@ impl Plugin for BackrollPlugin {
 
 /// Extension trait for configuring [App]s using a [BackrollPlugin].
 ///
-/// [App]: bevy_app::AppBuilder
+/// [App]: bevy_app::App
 /// [BackrollPlugin]: self::BackrollPlugin
 pub trait BackrollApp {
     /// Sets the input sampler system for Backroll. This is required. Backroll will

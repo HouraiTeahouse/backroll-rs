@@ -2,8 +2,9 @@ use crate::NetworkId;
 use bevy_ecs::prelude::*;
 use parking_lot::Mutex;
 use std::any::*;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
+use tinyset::SetU32;
 
 #[derive(Clone)]
 struct SavedComponents<T: Clone> {
@@ -12,14 +13,14 @@ struct SavedComponents<T: Clone> {
 
 /// A mutable builder for [`SaveState`]s.
 pub(crate) struct SaveStateBuilder {
-    ids: HashSet<NetworkId>,
+    ids: SetU32,
     state: Mutex<HashMap<TypeId, Box<dyn Any + Send + Sync>>>,
 }
 
 impl SaveStateBuilder {
     pub fn new() -> Self {
         Self {
-            ids: HashSet::new(),
+            ids: SetU32::new(),
             state: Mutex::new(HashMap::new()),
         }
     }
@@ -33,7 +34,7 @@ impl SaveStateBuilder {
 }
 
 struct SaveStateRef {
-    ids: HashSet<NetworkId>,
+    ids: SetU32,
     state: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
 }
 
@@ -75,7 +76,7 @@ pub(crate) fn load_resource<T: Clone + Send + Sync + 'static>(
 }
 
 pub(crate) fn save_network_ids(mut save_state: ResMut<SaveStateBuilder>, query: Query<&NetworkId>) {
-    save_state.ids = query.iter().cloned().collect();
+    save_state.ids = query.iter().map(|id| id.0).collect();
 }
 
 pub(crate) fn save_components<T: Component + Clone>(
@@ -102,14 +103,14 @@ pub(crate) fn sync_network_ids(
     // Despawn all network identities that shouldn't exist this frame.
     let mut ids = save_state.0.ids.clone();
     for (entity, network_id) in query.iter() {
-        if !ids.remove(network_id) {
+        if !ids.remove(network_id.0) {
             commands.entity(entity).despawn();
         }
     }
 
     // All IDs that remain need to re-spawned.
     for network_id in ids {
-        commands.spawn_bundle((network_id,));
+        commands.spawn_bundle((NetworkId(network_id),));
     }
 }
 

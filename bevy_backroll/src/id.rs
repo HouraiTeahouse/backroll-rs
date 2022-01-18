@@ -6,20 +6,20 @@ use bevy_ecs::component::Component;
 /// marker component present.
 #[derive(Debug, Component, Copy, Clone, Eq, Hash, PartialEq)]
 #[repr(transparent)]
-pub struct NetworkId(u64);
+pub struct NetworkId(pub(crate) u32);
 
 /// A provider resource of new, globally unique [`NetworkId`] components.
-/// 
+///
 /// This resource itself is registered as a saveable resource and is guarenteed
 /// to deterministically produce IDs across rollbacks.
-/// 
-/// This resource is reset upon starting a new session via 
+///
+/// This resource is reset upon starting a new session via
 /// [`BackrollCommands::start_new_session`][start_new_session].
-/// 
+///
 /// [start_new_session]: crate::BackrollCommands::start_new_session
 #[derive(Debug, Clone)]
 #[repr(transparent)]
-pub struct NetworkIdProvider(u64);
+pub struct NetworkIdProvider(u32);
 
 impl NetworkIdProvider {
     pub(crate) fn new() -> Self {
@@ -32,7 +32,7 @@ impl NetworkIdProvider {
         self.0 = self
             .0
             .checked_add(1)
-            .expect("NetworkId has overflowed u64::MAX.");
+            .expect("NetworkId has overflowed u32::MAX.");
         id
     }
 }

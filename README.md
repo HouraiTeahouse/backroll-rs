@@ -50,17 +50,8 @@ This repo contains the following crates:
 Due to linking requirements for backroll\_transport\_steam, local builds that 
 include the crate currently only build when the Steamworks SDK is available.
 
-According to steamworks-rs, at build time the `STEAM_SDK_LOCATION` env var must be 
-set to a copy of the [Steamworks SDK](https://partner.steamgames.com/doc/sdk) to
-properly link against.
-
-The Backroll repo has an embedded copy of the Steamworks SDK saved within it.
-If you are using Rust nightly v1.52+, cargo will automatically set this variable
-and use the embedded copy of the Steamworks SDK. This is unfortunately unavailable
-to stable Rust until [`configurable-env`](https://doc.rust-lang.org/nightly/cargo/reference/unstable.html#configurable-env)
-stablizes.
-
-If you are not using Steamworks, you can ignore this entirely. However, blanket
-workspace builds (i.e. `cargo build` in the repo root) will include the crate by 
-default. Using cargo dependencies via `path` should still work so long as Steam 
-support is not needed.
+According to `steamworks-rs`, at build time the `STEAM_SDK_LOCATION` env var must 
+be set to a copy of the [Steamworks SDK](https://partner.steamgames.com/doc/sdk) 
+to properly link against. This repo embeds a version of the Steam SDK and uses
+`.cargo` at the root of the repo to configure it for easier development. Cargo will
+automatically set the env variable to simplify local builds.

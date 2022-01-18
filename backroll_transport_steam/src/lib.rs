@@ -58,7 +58,7 @@ impl SteamP2PManager {
         let manager = Self {
             peers: peers.clone(),
             client: client.clone(),
-            task_pool: pool.clone(),
+            task_pool: pool,
 
             // Register a P2P session request handler.
             _session_request: client.register_callback(move |request: P2PSessionRequest| {
@@ -99,7 +99,7 @@ impl SteamP2PManager {
         } else {
             self.peers.create_unbounded(config.remote)
         };
-        let other = self.peers.get(&config.remote).unwrap().clone();
+        let other = self.peers.get(&config.remote).unwrap();
         let client = self.client.clone();
         let task = Self::send(other, config.remote, client);
         self.task_pool.spawn(task).detach();

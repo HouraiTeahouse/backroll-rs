@@ -14,9 +14,9 @@ pub struct NetworkId(pub(crate) u32);
 /// to deterministically produce IDs across rollbacks.
 ///
 /// This resource is reset upon starting a new session via
-/// [`BackrollCommands::start_new_session`][start_new_session].
+/// [`BackrollCommands::start_backroll_session`][start_backroll_session].
 ///
-/// [start_new_session]: crate::BackrollCommands::start_new_session
+/// [start_backroll_session]: crate::BackrollCommands::start_backroll_session
 #[derive(Debug, Clone)]
 #[repr(transparent)]
 pub struct NetworkIdProvider(u32);

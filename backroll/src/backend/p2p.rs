@@ -25,7 +25,7 @@ where
 {
     Local,
     Remote {
-        peer: Peer<T>,
+        peer: Box<Peer<T>>,
         rx: async_channel::Receiver<ProtocolEvent<T::Input>>,
     },
 }
@@ -54,7 +54,10 @@ impl<T: Config> PlayerType<T> {
             Player::Local => Self::Local,
             Player::Remote(peer) => {
                 let (peer, rx) = Self::make_peer(queue, peer, builder, connect, task_pool);
-                PlayerType::<T>::Remote { peer, rx }
+                PlayerType::<T>::Remote {
+                    peer: Box::new(peer),
+                    rx,
+                }
             }
         }
     }
@@ -789,7 +792,7 @@ impl<T: Config> P2PSession<T> {
         let queue = session_ref.player_handle_to_queue(player)?;
         Ok(session_ref.players[queue]
             .get_network_stats()
-            .unwrap_or_else(Default::default))
+            .unwrap_or_default())
     }
 
     /// Sets the frame delay for a given player.

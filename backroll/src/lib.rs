@@ -1,4 +1,4 @@
-use std::{hash::Hash, time::Duration};
+use std::time::Duration;
 use thiserror::Error;
 
 mod backend;

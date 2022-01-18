@@ -133,7 +133,7 @@ pub(crate) fn load_components<T: Component + Clone>(
 
     // HACK: This is REALLY going to screw with any change detection on these types.
     for (entity, network_id, comp) in query.iter_mut() {
-        match (slab.components.get(&network_id), comp) {
+        match (slab.components.get(network_id), comp) {
             (Some(saved), Some(mut comp)) => {
                 *comp = saved.clone();
             }

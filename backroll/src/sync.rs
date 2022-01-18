@@ -114,14 +114,6 @@ impl<T: Clone> SavedState<T> {
             .unwrap_or_else(|| panic!("Could not find saved frame index for frame: {}", frame));
         self.frames[self.head].clone()
     }
-
-    /// Peeks at the latest saved frame in the queue.
-    pub fn latest(&self) -> Option<SavedCell<T>> {
-        self.frames
-            .iter()
-            .max_by_key(|saved| saved.0.lock().frame)
-            .cloned()
-    }
 }
 
 impl<T> Default for SavedState<T> {
@@ -226,23 +218,6 @@ impl<T: Config> Sync<T> {
         self.input_queues[queue].add_input(input);
     }
 
-    pub fn get_confirmed_inputs(&mut self, frame: Frame) -> GameInput<T::Input> {
-        let mut output: GameInput<T::Input> = Default::default();
-        for idx in 0..self.config.player_count {
-            let input = if self.is_disconnected(idx) {
-                output.disconnected |= 1 << idx;
-                Default::default()
-            } else {
-                self.input_queues[idx]
-                    .get_confirmed_input(frame)
-                    .unwrap()
-                    .clone()
-            };
-            output.inputs[idx] = input.input;
-        }
-        output
-    }
-
     pub fn synchronize_inputs(&mut self) -> GameInput<T::Input> {
         let mut output = GameInput::<T::Input> {
             frame: self.frame_count,
@@ -265,10 +240,6 @@ impl<T: Config> Sync<T> {
         if let Some(seek_to) = self.check_simulation_consistency() {
             self.adjust_simulation(commands, seek_to);
         }
-    }
-
-    pub fn get_last_saved_frame(&self) -> SavedCell<T::State> {
-        self.saved_state.latest().unwrap()
     }
 
     pub fn load_frame(&mut self, commands: &mut Commands<T>, frame: Frame) {

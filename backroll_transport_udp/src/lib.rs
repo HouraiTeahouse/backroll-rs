@@ -85,7 +85,7 @@ impl UdpManager {
         } else {
             self.peers.create_unbounded(config.addr)
         };
-        let other = self.peers.get(&config.addr).unwrap().clone();
+        let other = self.peers.get(&config.addr).unwrap();
         let socket = self.socket.clone();
         let task = Self::send(other, config.addr, socket);
         self.task_pool.spawn(task).detach();

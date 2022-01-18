@@ -79,7 +79,7 @@ pub fn decode<T: Pod>(base: &T, data: impl AsRef<[u8]>) -> Result<Vec<T>, Decode
         for (local_idx, byte) in bits.iter_mut().enumerate() {
             *byte ^= delta[idx * stride + local_idx];
         }
-        output.push(*bytemuck::try_from_bytes::<T>(&bits)?)
+        output.push(*bytemuck::try_from_bytes::<T>(bits)?)
     }
 
     Ok(output)

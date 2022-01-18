@@ -308,7 +308,7 @@ impl Plugin for BackrollPlugin {
             .register_rollback_resource::<NetworkIdProvider>();
 
         #[cfg(feature = "steam")]
-        builder.add_plugin(steam::BackrollSteamPlugin);
+        app.add_plugin(steam::BackrollSteamPlugin);
     }
 }
 

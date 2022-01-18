@@ -28,7 +28,7 @@ parking_lot = "0.11"
 tinyset = "0.4"
 
 # Optional dependencies
-bevy-steamworks = { version = "0.1", optional = true }
+bevy-steamworks = { version = "0.2", optional = true }
 backroll_transport_steam = { path = "../backroll_transport_steam", version = "0.1", optional = true }
 
 [dev-dependencies]

@@ -18,6 +18,6 @@ docs-only = ["steamworks/docs-only"]
 [dependencies]
 backroll_transport = { path = "../backroll_transport", version = "0.1" }
 async-channel = "1.6"
-bevy_tasks = "0.5"
+bevy_tasks = "0.6"
 tracing = "0.1"
-steamworks = "0.7.0"
+steamworks = "0.8.0"

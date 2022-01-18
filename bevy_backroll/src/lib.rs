@@ -297,13 +297,15 @@ impl Plugin for BackrollPlugin {
         let mut before_load = SystemStage::parallel();
         before_load.add_system(sync_network_ids);
         app.add_event::<backroll::Event>()
+            .insert_resource(NetworkIdProvider::new())
             .insert_resource(BackrollStages(Arc::new(Mutex::new(BackrollStagesRef {
                 save,
                 simulate: SystemStage::parallel(),
                 before_load,
                 load: SystemStage::parallel(),
                 run_criteria: None,
-            }))));
+            }))))
+            .register_rollback_resource::<NetworkIdProvider>();
 
         #[cfg(feature = "steam")]
         builder.add_plugin(steam::BackrollSteamPlugin);
@@ -469,6 +471,8 @@ impl<'w, 's> BackrollCommands for BevyCommands<'w, 's> {
     where
         Input: PartialEq + bytemuck::Pod + bytemuck::Zeroable + Send + Sync,
     {
+        // Reset the NetworkIdProvider on the start of a new session.
+        self.insert_resource(NetworkIdProvider::new());
         self.insert_resource(session);
     }
 

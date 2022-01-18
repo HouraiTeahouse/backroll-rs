@@ -1,6 +1,6 @@
 [package]
 name = "backroll_transport_udp"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["Hourai Teahouse Developers <contact@houraiteahouse.net>"]
 description = "A raw async UDP implementation for backroll-transport."
@@ -8,7 +8,7 @@ repository = "https://github.com/HouraiTeahouse/backroll-rs"
 license = "ISC"
 
 [dependencies]
-backroll_transport = { path = "../backroll_transport", version = "0.1" }
+backroll_transport = { path = "../backroll_transport", version = "0.2" }
 async-channel = "1.6"
 async-net = "1.6.0" 
 bevy_tasks = "0.6"

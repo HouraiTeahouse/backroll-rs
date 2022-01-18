@@ -1,6 +1,6 @@
 [package]
 name = "backroll"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 authors = ["Hourai Teahouse Developers <contact@houraiteahouse.net>"]
 description = "A pure Rust async implementation of GGPO."
@@ -12,7 +12,7 @@ default = ["bevy"]
 bevy = ["bevy_tasks"]
 
 [dependencies]
-backroll_transport = {  path = "../backroll_transport", version = "0.1" }
+backroll_transport = {  path = "../backroll_transport", version = "0.2" }
 async-channel = "1.6"
 bevy_tasks = { version = "0.6", optional = true }
 bincode = "1.3"

@@ -5,28 +5,52 @@
 //!
 //! Installing the plugin:
 //! ```rust no_run
+//! use backroll::*;
 //! use bytemuck::*;
 //! use bevy::prelude::*;
 //! use bevy_backroll::*;
 //!
 //! // Create your Backroll input type
-//! #[derive(Clone, Copy, Pod, Zeroable)]
-//! pub struct BackrollInput {
+//! #[repr(C)]
+//! #[derive(Clone, Copy, Eq, PartialEq, Pod, Zeroable)]
+//! pub struct PlayerInput {
 //!    // Input data...
-//! !  pub button_pressed: u64
+//!    pub buttons_pressed: u8,
+//! }
+//! 
+//! // Create your state. Must implement Clone.
+//! #[derive(Component, Clone)]
+//! pub struct PlayerState {
+//!    pub handle: PlayerHandle,
+//!    pub current_value: u64,
 //! }
 //!
-//! fn sample_player_input(player: PlayerHandle) -> BackrollInput {
+//! // Sample input from the local player's controller.
+//! fn sample_player_input(player: In<PlayerHandle>) -> PlayerInput {
 //!    // Sample input data...
-//! !   BackrollInput {
-//! !      buttons_pressed: 0,
-//! !   }
+//!    PlayerInput {
+//!       buttons_pressed: 1,
+//!    }
+//! }
+//! 
+//! // Use input to advance the game simulation.
+//! fn simulate_game(
+//!   input: Res<GameInput<PlayerInput>>,
+//!   mut query: Query<&mut PlayerState>
+//! ) {
+//!    for mut player in query.iter_mut() {
+//!       if let Ok(input) = input.get(player.handle) {
+//!          player.current_value += input.buttons_pressed as u64;
+//!       }
+//!    }
 //! }
 //!
 //! fn main() {
-//!     App::build()
+//!     App::new()
 //!         .add_plugin(BackrollPlugin)
-//!         .register_rollback_input(sample_player_input)
+//!         .register_rollback_input(sample_player_input.system())
+//!         .register_rollback_component::<PlayerState>()
+//!         .add_rollback_system(simulate_game)
 //!         .run();
 //! }
 //! ```

@@ -94,10 +94,6 @@ impl PeerState {
         }
     }
 
-    pub fn is_disconnected(&self) -> bool {
-        matches!(self, Self::Disconnected)
-    }
-
     pub fn is_interrupted(&self) -> bool {
         matches!(self, Self::Interrupted { .. })
     }

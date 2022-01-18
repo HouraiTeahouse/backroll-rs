@@ -1,7 +1,7 @@
 [package]
 name = "backroll_transport"
 version = "0.1.2"
-edition = "2018"
+edition = "2021"
 authors = ["Hourai Teahouse Developers <contact@houraiteahouse.net>"]
 description = "An async transport abstraction layer."
 repository = "https://github.com/HouraiTeahouse/backroll-rs"
@@ -9,7 +9,7 @@ license = "ISC"
 
 [dependencies]
 async-channel = "1.6"
-dashmap = "4.0"
+dashmap = "5.0"
 
 [dev-dependencies]
 static_assertions = "1.1"

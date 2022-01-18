@@ -87,10 +87,6 @@ impl<T> FetchedInput<T> {
             Self::Prediction(input) => input,
         }
     }
-
-    pub fn is_prediction(&self) -> bool {
-        matches!(self, Self::Prediction(_))
-    }
 }
 
 pub struct InputQueue<T> {
@@ -146,11 +142,6 @@ impl<T: bytemuck::Zeroable + Clone + PartialEq> InputQueue<T> {
         }
     }
 
-    pub fn last_confirmed_frame(&self) -> Frame {
-        debug!("returning last confirmed frame {}.", self.last_added_frame);
-        self.last_added_frame
-    }
-
     pub fn first_incorrect_frame(&self) -> Frame {
         self.first_incorrect_frame
     }
@@ -196,14 +187,6 @@ impl<T: bytemuck::Zeroable + Clone + PartialEq> InputQueue<T> {
         self.prediction.frame = super::NULL_FRAME;
         self.first_incorrect_frame = super::NULL_FRAME;
         self.last_frame_requested = super::NULL_FRAME;
-    }
-
-    pub fn get_confirmed_input(&self, frame: Frame) -> Option<&FrameInput<T>> {
-        debug_assert!(
-            super::is_null(self.first_incorrect_frame) || frame < self.first_incorrect_frame
-        );
-        let offset = usize::try_from(frame).unwrap() % MAX_ROLLBACK_FRAMES;
-        self.inputs.get(offset)
     }
 
     pub fn get_input(&mut self, frame: Frame) -> FetchedInput<T> {

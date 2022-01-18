@@ -1,50 +1,95 @@
+#![warn(missing_docs)]
+
 //! A [Bevy](https://bevyengine.org) plugin that adds support for running
 //! [Backroll](https://crates.io/crates/backroll) sessions.
 //!
 //! Installing the plugin:
 //! ```rust no_run
+//! use backroll::*;
+//! use bytemuck::*;
 //! use bevy::prelude::*;
 //! use bevy_backroll::*;
 //!
-//! // Create your Backroll Config
-//! pub struct BackrollConfig;
+//! // Create your Backroll input type
+//! #[repr(C)]
+//! #[derive(Clone, Copy, Eq, PartialEq, Pod, Zeroable)]
+//! pub struct PlayerInput {
+//!    // Input data...
+//!    pub buttons_pressed: u8,
+//! }
 //!
-//! impl backroll::Config for BackrollConfig {
-//!     type Input = i32;
-//!     type State = i32;
+//! // Create your state. Must implement Clone.
+//! #[derive(Component, Clone)]
+//! pub struct PlayerState {
+//!    pub handle: PlayerHandle,
+//!    pub current_value: u64,
+//! }
+//!
+//! // Sample input from the local player's controller.
+//! fn sample_player_input(player: In<PlayerHandle>) -> PlayerInput {
+//!    // Sample input data...
+//!    PlayerInput {
+//!       buttons_pressed: 1,
+//!    }
+//! }
+//!
+//! // Use input to advance the game simulation.
+//! fn simulate_game(
+//!   input: Res<GameInput<PlayerInput>>,
+//!   mut query: Query<&mut PlayerState>
+//! ) {
+//!    for mut player in query.iter_mut() {
+//!       if let Ok(input) = input.get(player.handle) {
+//!          player.current_value += input.buttons_pressed as u64;
+//!       }
+//!    }
 //! }
 //!
 //! fn main() {
-//!     App::build()
-//!         .add_plugin(BackrollPlugin::<BackrollConfig>::default())
+//!     App::new()
+//!         .add_plugin(BackrollPlugin)
+//!         .register_rollback_input(sample_player_input.system())
+//!         .register_rollback_component::<PlayerState>()
+//!         .add_rollback_system(simulate_game)
 //!         .run();
 //! }
 //! ```
 use backroll::{
     command::{Command, Commands},
-    Config, Event, GameInput, P2PSession, PlayerHandle,
+    Config, Event, GameInput, PlayerHandle,
 };
 use bevy_app::{App, CoreStage, Events, Plugin};
-use bevy_core::FixedTimestep;
 use bevy_ecs::{
-    schedule::{IntoSystemDescriptor, Schedule, ShouldRun, Stage, SystemSet, SystemStage},
+    prelude::*,
+    schedule::{IntoSystemDescriptor, ShouldRun, Stage, SystemSet, SystemStage},
     system::{Commands as BevyCommands, System},
     world::World,
 };
 use bevy_log::{debug, error};
+use parking_lot::Mutex;
+use std::marker::PhantomData;
+use std::sync::Arc;
 
+mod id;
+mod save_state;
 #[cfg(feature = "steam")]
 mod steam;
 
 pub use backroll;
+pub use id::*;
+use save_state::*;
+
+/// A [`P2PSession`] alias for bevy_backroll sessions. Uses [`BevyBackrollConfig`]
+/// as the config type.
+pub type P2PSession<Input> = backroll::P2PSession<BevyBackrollConfig<Input>>;
 
 /// The [SystemLabel] used by the [BackrollStage] added by [BackrollPlugin].
 ///
 /// [SystemLabel]: bevy_ecs::schedule::SystemLabel
 /// [BackrollStage]: self::BackrollStage
 /// [BackrollPlugin]: self::BackrollPlugin
-pub const BACKROLL_UPDATE: &str = "backroll_update";
-const BACKROLL_LOGIC_UPDATE: &str = "backroll_logic_update";
+#[derive(Debug, Clone, Eq, Hash, StageLabel, PartialEq)]
+pub struct BackrollUpdate;
 
 /// Manages when to inject frame stalls to keep in sync with remote players.
 struct FrameStaller {
@@ -91,6 +136,29 @@ impl FrameStaller {
     }
 }
 
+struct BackrollStagesRef {
+    save: SystemStage,
+    simulate: SystemStage,
+    before_load: SystemStage,
+    load: SystemStage,
+    run_criteria: Option<Box<dyn System<In = (), Out = ShouldRun>>>,
+}
+
+#[derive(Clone)]
+struct BackrollStages(Arc<Mutex<BackrollStagesRef>>);
+
+/// The Backroll config type for bevy_backroll sessions.
+pub struct BevyBackrollConfig<Input> {
+    _marker: PhantomData<Input>,
+}
+
+impl<Input: PartialEq + bytemuck::Pod + bytemuck::Zeroable + Send + Sync> Config
+    for BevyBackrollConfig<Input>
+{
+    type Input = Input;
+    type State = SaveState;
+}
+
 /// A [Stage] that transparently runs and handles Backroll sessions.
 ///
 /// Each time the stage runs, it will poll the Backroll session, sample local player
@@ -98,12 +166,11 @@ impl FrameStaller {
 ///
 /// The stage will automatically handle Backroll commands by doing the following:
 ///  
-///  - [Command::Save]: Runs the system registered through [with_world_save_system]
-///    to make a save state of the [World].
-///  - [Command::Load]: Runs the system registered through [with_world_load_system]
-///    to restore a save state of the [World].
+///  - [Command::Save]: Saves an immutable copy of the components and resoures from the
+///    main app [`World`] into a save state.
+///  - [Command::Load]: Loads a prior saved World state into the main app [`World`].
 ///  - [Command::AdvanceFrame]: Injects the provided [GameInput] as a resource then
-///    runs all simulation based systems once (see: [with_rollback_system])
+///    runs all simulation based systems once (see: [add_rollback_system])
 ///  - [Command::Event]: Forwards all events to Bevy. Can be read out via [EventReader].
 ///    Automatically handles time synchronization by smoothly injecting stall frames when
 ///    ahead of remote players.
@@ -122,62 +189,44 @@ impl FrameStaller {
 /// [BackrollCommands]: self::BackrollCommands
 /// [FixedTimestep]: bevy_core::FixedTimestep
 /// [EventReader]: bevy_app::EventReader
-/// [with_world_save_system]: self::BackrollAppBuilder::with_world_save_system
-/// [with_world_load_system]: self::BackrollAppBuilder::with_world_save_system
-/// [with_rollback_system]: self::BackrollAppBuilder::with_rollback_system
-pub struct BackrollStage<T>
+/// [add_rollback_system]: self::BackrollApp::add_rollback_system
+pub struct BackrollStage<Input>
 where
-    T: Config,
+    Input: PartialEq + bytemuck::Pod + bytemuck::Zeroable + Send + Sync,
 {
-    pub schedule: Schedule,
-    run_criteria: Option<Box<dyn System<In = (), Out = ShouldRun>>>,
     staller: FrameStaller,
-    input_sample_fn:
-        Option<Box<dyn System<In = PlayerHandle, Out = T::Input> + Send + Sync + 'static>>,
-    save_world_fn: Option<Box<dyn System<In = (), Out = T::State> + Send + Sync + 'static>>,
-    load_world_fn: Option<Box<dyn System<In = T::State, Out = ()> + Send + Sync + 'static>>,
+    input_sample_fn: Box<dyn System<In = PlayerHandle, Out = Input> + Send + Sync + 'static>,
 }
 
-impl<T: Config> Default for BackrollStage<T> {
-    fn default() -> Self {
-        Self {
-            schedule: Default::default(),
-            run_criteria: None,
-            staller: FrameStaller::new(),
-            input_sample_fn: None,
-            save_world_fn: None,
-            load_world_fn: None,
-        }
-    }
-}
-
-impl<T: Config> BackrollStage<T> {
-    fn run_commands(&mut self, commands: Commands<T>, world: &mut World) {
+impl<Input> BackrollStage<Input>
+where
+    Input: PartialEq + bytemuck::Pod + bytemuck::Zeroable + Send + Sync,
+{
+    fn run_commands(&mut self, commands: Commands<BevyBackrollConfig<Input>>, world: &mut World) {
+        let stage = world.get_resource::<BackrollStages>().unwrap().clone();
         for command in commands {
             match command {
-                Command::<T>::Save(save_state) => {
-                    let state = self
-                        .save_world_fn
-                        .as_mut()
-                        .expect(
-                            "No world save system found. Please use App::with_world_load_system",
-                        )
-                        .run((), world);
+                Command::Save(save_state) => {
+                    world.insert_resource(SaveStateBuilder::new());
+                    stage.0.lock().save.run(world);
                     // TODO(james7132): Find a way to hash the state here generically.
-                    save_state.save_without_hash(state);
+                    save_state.save_without_hash(
+                        world.remove_resource::<SaveStateBuilder>().unwrap().build(),
+                    );
                 }
-                Command::<T>::Load(load_state) => {
-                    self.load_world_fn
-                        .as_mut()
-                        .expect(
-                            "No world load system found. Please use App::with_world_load_system",
-                        )
-                        .run(load_state.load(), world);
+                Command::Load(load_state) => {
+                    world.insert_resource(load_state.load());
+                    {
+                        let mut stage = stage.0.lock();
+                        stage.before_load.run(world);
+                        stage.load.run(world);
+                    }
+                    world.remove_resource::<SaveState>();
                 }
                 Command::AdvanceFrame(inputs) => {
                     // Insert input via Resource
-                    *world.get_resource_mut::<GameInput<T::Input>>().unwrap() = inputs;
-                    self.schedule.run_once(world);
+                    *world.get_resource_mut::<GameInput<Input>>().unwrap() = inputs;
+                    stage.0.lock().simulate.run(world);
                 }
                 Command::Event(evt) => {
                     debug!("Received Backroll Event: {:?}", evt);
@@ -195,42 +244,41 @@ impl<T: Config> BackrollStage<T> {
     }
 }
 
-impl<T: Config> Stage for BackrollStage<T> {
+impl<Input> Stage for BackrollStage<Input>
+where
+    Input: PartialEq + bytemuck::Pod + bytemuck::Zeroable + Send + Sync,
+{
     fn run(&mut self, world: &mut World) {
         loop {
-            let should_run = if let Some(ref mut run_criteria) = self.run_criteria {
-                run_criteria.run((), world)
-            } else {
-                ShouldRun::Yes
+            let should_run = {
+                let stages = world.get_resource::<BackrollStages>().unwrap().clone();
+                let run_criteria = &mut stages.0.lock().run_criteria;
+                if let Some(ref mut run_criteria) = run_criteria {
+                    run_criteria.run((), world)
+                } else {
+                    ShouldRun::Yes
+                }
             };
 
             if let ShouldRun::No = should_run {
                 return;
             }
 
-            let session = if let Some(session) = world.get_resource_mut::<P2PSession<T>>() {
+            let session = if let Some(session) = world.get_resource_mut::<P2PSession<Input>>() {
                 session.clone()
             } else {
                 // No ongoing session, don't run.
                 return;
             };
 
-            world.insert_resource(GameInput::<T::Input>::default());
             self.run_commands(session.poll(), world);
-            world.remove_resource::<GameInput<T::Input>>();
 
             if self.staller.should_stall() {
                 continue;
             }
 
             for player_handle in session.local_players() {
-                let input = self
-                    .input_sample_fn
-                    .as_mut()
-                    .expect(
-                        "No input sampler system found. Please use App::with_input_sampler_system",
-                    )
-                    .run(player_handle, world);
+                let input = self.input_sample_fn.run(player_handle, world);
                 if let Err(err) = session.add_local_input(player_handle, input) {
                     error!(
                         "Error while adding local input for {:?}: {:?}",
@@ -240,9 +288,7 @@ impl<T: Config> Stage for BackrollStage<T> {
                 }
             }
 
-            world.insert_resource(GameInput::<T::Input>::default());
             self.run_commands(session.advance_frame(), world);
-            world.remove_resource::<GameInput<T::Input>>();
 
             if let ShouldRun::Yes = should_run {
                 return;
@@ -265,60 +311,50 @@ impl<T: Config> Stage for BackrollStage<T> {
 ///
 /// [BackrolLStage]: self::BackrollStage
 /// [Event]: backroll::Event
-pub struct BackrollPlugin<T>(std::marker::PhantomData<T>)
-where
-    T: backroll::Config + Send + Sync;
+#[derive(Default)]
+pub struct BackrollPlugin;
 
-impl<T: backroll::Config + Send + Sync> Plugin for BackrollPlugin<T> {
-    fn build(&self, builder: &mut App) {
-        let mut schedule = Schedule::default();
-        schedule.add_stage(BACKROLL_LOGIC_UPDATE, SystemStage::parallel());
-        builder.add_event::<backroll::Event>().add_stage_before(
-            CoreStage::Update,
-            BACKROLL_UPDATE,
-            BackrollStage::<T> {
-                schedule,
-                run_criteria: Some(Box::new(FixedTimestep::steps_per_second(60.0))),
-                ..Default::default()
-            },
-        );
+impl Plugin for BackrollPlugin {
+    fn build(&self, app: &mut App) {
+        let mut save = SystemStage::parallel();
+        save.add_system(save_network_ids);
+        let mut before_load = SystemStage::parallel();
+        before_load.add_system(sync_network_ids);
+        app.add_event::<backroll::Event>()
+            .insert_resource(NetworkIdProvider::new())
+            .insert_resource(BackrollStages(Arc::new(Mutex::new(BackrollStagesRef {
+                save,
+                simulate: SystemStage::parallel(),
+                before_load,
+                load: SystemStage::parallel(),
+                run_criteria: None,
+            }))))
+            .register_rollback_resource::<NetworkIdProvider>();
 
         #[cfg(feature = "steam")]
-        builder.add_plugin(steam::BackrollSteamPlugin);
-    }
-}
-
-impl<T: Config + Send + Sync> Default for BackrollPlugin<T> {
-    fn default() -> Self {
-        Self(Default::default())
+        app.add_plugin(steam::BackrollSteamPlugin);
     }
 }
 
 /// Extension trait for configuring [App]s using a [BackrollPlugin].
 ///
-/// [App]: bevy_app::AppBuilder
+/// [App]: bevy_app::App
 /// [BackrollPlugin]: self::BackrollPlugin
 pub trait BackrollApp {
-    /// Sets the input sampler system for Backroll. This is required. Attempting to start
-    /// a Backroll session without setting this will result in a panic.
-    fn with_input_sampler_system<T, S>(&mut self, system: S) -> &mut Self
+    /// Sets the input sampler system for Backroll. This is required. Backroll will
+    /// not start without this being set.
+    fn register_rollback_input<Input, S>(&mut self, system: S) -> &mut Self
     where
-        T: backroll::Config,
-        S: System<In = PlayerHandle, Out = T::Input> + Send + Sync + 'static;
+        Input: PartialEq + bytemuck::Pod + bytemuck::Zeroable + Send + Sync,
+        S: System<In = PlayerHandle, Out = Input> + Send + Sync + 'static;
 
-    /// Sets the world save system for Backroll. This is required. Attempting to start a
-    /// Backroll session without setting this will result in a panic.
-    fn with_world_save_system<T, S>(&mut self, system: S) -> &mut Self
-    where
-        T: backroll::Config,
-        S: System<In = (), Out = T::State> + Send + Sync + 'static;
+    /// Registers a specific component type for saving into Backroll's save states.
+    /// Any game simulation state stored in components should be registered here.
+    fn register_rollback_component<T: Component + Clone>(&mut self) -> &mut Self;
 
-    /// Sets the world load system for Backroll. This is required. Attempting to start a
-    /// Backroll session without setting this will result in a panic.
-    fn with_world_load_system<T, S>(&mut self, system: S) -> &mut Self
-    where
-        T: backroll::Config,
-        S: System<In = T::State, Out = ()> + Send + Sync + 'static;
+    /// Registers a specific resource type for saving into Backroll's save states.
+    /// Any game simulation state stored in resources should be registered here.
+    fn register_rollback_resource<T: Clone + Send + Sync + 'static>(&mut self) -> &mut Self;
 
     /// Sets the [RunCriteria] for the [BackrollStage]. By default this uses a [FixedTimestep]
     /// set to 60 ticks per second.
@@ -326,103 +362,108 @@ pub trait BackrollApp {
     /// [RunCriteria]: bevy_ecs::schedule::RunCriteria
     /// [BackrollStage]: self::BackrollStage
     /// [FixedTimestep]: bevy_core::FixedTimestep
-    fn with_rollback_run_criteria<T, S>(&mut self, system: S) -> &mut Self
+    fn with_rollback_run_criteria<Input, S>(&mut self, system: S) -> &mut Self
     where
-        T: backroll::Config,
         S: System<In = (), Out = ShouldRun>;
 
     /// Adds a system to the Backroll stage.
-    fn with_rollback_system<T, S, U>(&mut self, system: S) -> &mut Self
+    fn add_rollback_system<S, U>(&mut self, system: S) -> &mut Self
     where
-        T: backroll::Config,
         S: IntoSystemDescriptor<U>;
 
     /// Adds a [SystemSet] to the BackrollStage.
     ///
     /// [SystemSet]: bevy_ecs::schedule::SystemSet
-    fn with_rollback_system_set<T: backroll::Config>(&mut self, system: SystemSet) -> &mut Self;
+    fn add_rollback_system_set(&mut self, system: impl Into<SystemSet>) -> &mut Self;
 }
 
 impl BackrollApp for App {
-    fn with_input_sampler_system<T, S>(&mut self, mut system: S) -> &mut Self
+    fn register_rollback_input<Input, S>(&mut self, system: S) -> &mut Self
     where
-        T: backroll::Config,
-        S: System<In = PlayerHandle, Out = T::Input> + Send + Sync + 'static,
+        Input: PartialEq + bytemuck::Pod + bytemuck::Zeroable + Send + Sync,
+        S: System<In = PlayerHandle, Out = Input> + Send + Sync + 'static,
     {
-        system.initialize(&mut self.world);
-        let stage = self
-            .schedule
-            .get_stage_mut::<BackrollStage<T>>(&BACKROLL_UPDATE)
-            .expect("No BackrollStage found! Did you install the plugin?");
-        stage.input_sample_fn = Some(Box::new(system));
+        self.insert_resource(GameInput::<Input>::default());
+        self.add_stage_before(
+            CoreStage::Update,
+            BackrollUpdate,
+            BackrollStage::<Input> {
+                staller: FrameStaller::new(),
+                input_sample_fn: Box::new(system),
+            },
+        );
+
         self
     }
 
-    fn with_world_save_system<T, S>(&mut self, mut system: S) -> &mut Self
-    where
-        T: backroll::Config,
-        S: System<In = (), Out = T::State> + Send + Sync + 'static,
-    {
-        system.initialize(&mut self.world);
-        let stage = self
-            .schedule
-            .get_stage_mut::<BackrollStage<T>>(&BACKROLL_UPDATE)
-            .expect("No BackrollStage found! Did you install the plugin?");
-        stage.save_world_fn = Some(Box::new(system));
+    fn register_rollback_component<T: Component + Clone>(&mut self) -> &mut Self {
+        {
+            let mut stages = self
+                .world
+                .get_resource::<BackrollStages>()
+                .expect("No BackrollStages found! Did you install the plugin?")
+                .0
+                .lock();
+
+            stages.load.add_system(load_components::<T>);
+            stages.save.add_system(save_components::<T>);
+        }
+
         self
     }
 
-    fn with_world_load_system<T, S>(&mut self, mut system: S) -> &mut Self
-    where
-        T: backroll::Config,
-        S: System<In = T::State, Out = ()> + Send + Sync + 'static,
-    {
-        system.initialize(&mut self.world);
-        let stage = self
-            .schedule
-            .get_stage_mut::<BackrollStage<T>>(&BACKROLL_UPDATE)
-            .expect("No BackrollStage found! Did you install the plugin?");
-        stage.load_world_fn = Some(Box::new(system));
+    fn register_rollback_resource<T: Clone + Send + Sync + 'static>(&mut self) -> &mut Self {
+        {
+            let mut stages = self
+                .world
+                .get_resource::<BackrollStages>()
+                .expect("No BackrollStages found! Did you install the plugin?")
+                .0
+                .lock();
+
+            stages.load.add_system(load_resource::<T>);
+            stages.save.add_system(save_resource::<T>);
+        }
+
         self
     }
 
-    fn with_rollback_run_criteria<T, S>(&mut self, mut run_criteria: S) -> &mut Self
+    fn with_rollback_run_criteria<Input, S>(&mut self, mut run_criteria: S) -> &mut Self
     where
-        T: backroll::Config,
         S: System<In = (), Out = ShouldRun>,
     {
         run_criteria.initialize(&mut self.world);
-        let stage = self
-            .schedule
-            .get_stage_mut::<BackrollStage<T>>(&BACKROLL_UPDATE)
-            .expect("No BackrollStage found! Did you install the plugin?");
-        stage.run_criteria = Some(Box::new(run_criteria));
+        self.world
+            .get_resource::<BackrollStages>()
+            .expect("No BackrollStages found! Did you install the plugin?")
+            .0
+            .lock()
+            .run_criteria = Some(Box::new(run_criteria));
         self
     }
 
-    fn with_rollback_system<T, S, U>(&mut self, system: S) -> &mut Self
+    fn add_rollback_system<S, U>(&mut self, system: S) -> &mut Self
     where
-        T: backroll::Config,
         S: IntoSystemDescriptor<U>,
     {
-        let stage = self
-            .schedule
-            .get_stage_mut::<BackrollStage<T>>(&BACKROLL_UPDATE)
-            .expect("No BackrollStage found! Did you install the plugin?");
-        stage
-            .schedule
-            .add_system_to_stage(BACKROLL_LOGIC_UPDATE, system);
+        self.world
+            .get_resource::<BackrollStages>()
+            .expect("No BackrollStages found! Did you install the plugin?")
+            .0
+            .lock()
+            .simulate
+            .add_system(system);
         self
     }
 
-    fn with_rollback_system_set<T: backroll::Config>(&mut self, system: SystemSet) -> &mut Self {
-        let stage = self
-            .schedule
-            .get_stage_mut::<BackrollStage<T>>(&BACKROLL_UPDATE)
-            .expect("No BackrollStage found! Did you install the plugin?");
-        stage
-            .schedule
-            .add_system_set_to_stage(BACKROLL_LOGIC_UPDATE, system);
+    fn add_rollback_system_set(&mut self, system: impl Into<SystemSet>) -> &mut Self {
+        self.world
+            .get_resource::<BackrollStages>()
+            .expect("No BackrollStages found! Did you install the plugin?")
+            .0
+            .lock()
+            .simulate
+            .add_system_set(system.into());
         self
     }
 }
@@ -436,21 +477,33 @@ pub trait BackrollCommands {
     /// can be accessed via [Res].
     ///
     /// [Res]: bevy_ecs::system::Res
-    fn start_backroll_session<T: backroll::Config>(&mut self, session: P2PSession<T>);
+    fn start_backroll_session<Input>(&mut self, session: P2PSession<Input>)
+    where
+        Input: PartialEq + bytemuck::Pod + bytemuck::Zeroable + Send + Sync;
 
     /// Ends the ongoing Backroll session. This will remove the associated resource and drop
     /// the session.
     ///
     /// Does nothing if there is no ongoing session.
-    fn end_backroll_session<T: backroll::Config>(&mut self);
+    fn end_backroll_session<Input>(&mut self)
+    where
+        Input: PartialEq + bytemuck::Pod + bytemuck::Zeroable + Send + Sync;
 }
 
 impl<'w, 's> BackrollCommands for BevyCommands<'w, 's> {
-    fn start_backroll_session<T: backroll::Config>(&mut self, session: P2PSession<T>) {
+    fn start_backroll_session<Input>(&mut self, session: P2PSession<Input>)
+    where
+        Input: PartialEq + bytemuck::Pod + bytemuck::Zeroable + Send + Sync,
+    {
+        // Reset the NetworkIdProvider on the start of a new session.
+        self.insert_resource(NetworkIdProvider::new());
         self.insert_resource(session);
     }
 
-    fn end_backroll_session<T: backroll::Config>(&mut self) {
-        self.remove_resource::<P2PSession<T>>();
+    fn end_backroll_session<Input>(&mut self)
+    where
+        Input: PartialEq + bytemuck::Pod + bytemuck::Zeroable + Send + Sync,
+    {
+        self.remove_resource::<P2PSession<Input>>();
     }
 }

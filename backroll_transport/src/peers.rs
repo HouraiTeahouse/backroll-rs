@@ -17,7 +17,7 @@ impl<T: Eq + Hash> Peers<T> {
     ///
     /// [Peer]: crate::Peer
     pub fn get(&self, id: &T) -> Option<Peer> {
-        self.0.get(&id).and_then(|kv| {
+        self.0.get(id).and_then(|kv| {
             let peer = kv.value().clone();
             if peer.is_connected() {
                 Some(peer)
@@ -28,6 +28,7 @@ impl<T: Eq + Hash> Peers<T> {
     }
 
     /// Gets the number of active connections managed by it.
+    #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
         self.0.iter().filter(|kv| kv.value().is_connected()).count()
     }
@@ -35,7 +36,7 @@ impl<T: Eq + Hash> Peers<T> {
     /// Checks if the store has a connection to the given ID.
     pub fn contains(&self, id: &T) -> bool {
         self.0
-            .get(&id)
+            .get(id)
             .map(|kv| kv.value().is_connected())
             .unwrap_or(false)
     }
@@ -70,7 +71,7 @@ impl<T: Eq + Hash> Peers<T> {
     ///
     /// A no-op if there no Peer with the given ID.
     pub fn disconnect(&self, id: &T) {
-        if let Some((_, peer)) = self.0.remove(&id) {
+        if let Some((_, peer)) = self.0.remove(id) {
             peer.disconnect();
         }
     }

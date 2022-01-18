@@ -17,7 +17,7 @@
 //!    // Input data...
 //!    pub buttons_pressed: u8,
 //! }
-//! 
+//!
 //! // Create your state. Must implement Clone.
 //! #[derive(Component, Clone)]
 //! pub struct PlayerState {
@@ -32,7 +32,7 @@
 //!       buttons_pressed: 1,
 //!    }
 //! }
-//! 
+//!
 //! // Use input to advance the game simulation.
 //! fn simulate_game(
 //!   input: Res<GameInput<PlayerInput>>,

@@ -66,9 +66,7 @@ use bevy_ecs::{
     world::World,
 };
 use bevy_log::{debug, error};
-use parking_lot::Mutex;
 use std::marker::PhantomData;
-use std::sync::Arc;
 
 mod id;
 mod save_state;
@@ -136,16 +134,13 @@ impl FrameStaller {
     }
 }
 
-struct BackrollStagesRef {
+struct BackrollStages {
     save: SystemStage,
     simulate: SystemStage,
     before_load: SystemStage,
     load: SystemStage,
     run_criteria: Option<Box<dyn System<In = (), Out = ShouldRun>>>,
 }
-
-#[derive(Clone)]
-struct BackrollStages(Arc<Mutex<BackrollStagesRef>>);
 
 /// The Backroll config type for bevy_backroll sessions.
 pub struct BevyBackrollConfig<Input> {
@@ -203,44 +198,42 @@ where
     Input: PartialEq + bytemuck::Pod + bytemuck::Zeroable + Send + Sync,
 {
     fn run_commands(&mut self, commands: Commands<BevyBackrollConfig<Input>>, world: &mut World) {
-        let stage = world.get_resource::<BackrollStages>().unwrap().clone();
-        for command in commands {
-            match command {
-                Command::Save(save_state) => {
-                    world.insert_resource(SaveStateBuilder::new());
-                    stage.0.lock().save.run(world);
-                    // TODO(james7132): Find a way to hash the state here generically.
-                    save_state.save_without_hash(
-                        world.remove_resource::<SaveStateBuilder>().unwrap().build(),
-                    );
-                }
-                Command::Load(load_state) => {
-                    world.insert_resource(load_state.load());
-                    {
-                        let mut stage = stage.0.lock();
-                        stage.before_load.run(world);
-                        stage.load.run(world);
+        world.resource_scope(|world, mut stages: Mut<BackrollStages>| {
+            for command in commands {
+                match command {
+                    Command::Save(save_state) => {
+                        world.insert_resource(SaveStateBuilder::new());
+                        stages.save.run(world);
+                        // TODO(james7132): Find a way to hash the state here generically.
+                        save_state.save_without_hash(
+                            world.remove_resource::<SaveStateBuilder>().unwrap().build(),
+                        );
                     }
-                    world.remove_resource::<SaveState>();
-                }
-                Command::AdvanceFrame(inputs) => {
-                    // Insert input via Resource
-                    *world.get_resource_mut::<GameInput<Input>>().unwrap() = inputs;
-                    stage.0.lock().simulate.run(world);
-                }
-                Command::Event(evt) => {
-                    debug!("Received Backroll Event: {:?}", evt);
-
-                    // Update time sync stalls properly.
-                    if let Event::TimeSync { frames_ahead } = &evt {
-                        self.staller.reset(*frames_ahead);
+                    Command::Load(load_state) => {
+                        world.insert_resource(load_state.load());
+                        stages.before_load.run(world);
+                        stages.load.run(world);
+                        world.remove_resource::<SaveState>();
                     }
+                    Command::AdvanceFrame(inputs) => {
+                        // Insert input via Resource
+                        *world.get_resource_mut::<GameInput<Input>>().unwrap() = inputs;
+                        stages.simulate.run(world);
+                    }
+                    Command::Event(evt) => {
+                        debug!("Received Backroll Event: {:?}", evt);
 
-                    let mut events = world.get_resource_mut::<Events<Event>>().unwrap();
-                    events.send(evt.clone());
+                        // Update time sync stalls properly.
+                        if let Event::TimeSync { frames_ahead } = &evt {
+                            self.staller.reset(*frames_ahead);
+                        }
+
+                        let mut events = world.get_resource_mut::<Events<Event>>().unwrap();
+                        events.send(evt.clone());
+                    }
                 }
             }
-        }
+        });
     }
 }
 
@@ -250,15 +243,13 @@ where
 {
     fn run(&mut self, world: &mut World) {
         loop {
-            let should_run = {
-                let stages = world.get_resource::<BackrollStages>().unwrap().clone();
-                let run_criteria = &mut stages.0.lock().run_criteria;
-                if let Some(ref mut run_criteria) = run_criteria {
+            let should_run = world.resource_scope(|world, mut stages: Mut<BackrollStages>| {
+                if let Some(ref mut run_criteria) = stages.run_criteria {
                     run_criteria.run((), world)
                 } else {
                     ShouldRun::Yes
                 }
-            };
+            });
 
             if let ShouldRun::No = should_run {
                 return;
@@ -322,13 +313,13 @@ impl Plugin for BackrollPlugin {
         before_load.add_system(sync_network_ids);
         app.add_event::<backroll::Event>()
             .insert_resource(NetworkIdProvider::new())
-            .insert_resource(BackrollStages(Arc::new(Mutex::new(BackrollStagesRef {
+            .insert_resource(BackrollStages {
                 save,
                 simulate: SystemStage::parallel(),
                 before_load,
                 load: SystemStage::parallel(),
                 run_criteria: None,
-            }))))
+            })
             .register_rollback_resource::<NetworkIdProvider>();
 
         #[cfg(feature = "steam")]
@@ -397,47 +388,32 @@ impl BackrollApp for App {
     }
 
     fn register_rollback_component<T: Component + Clone>(&mut self) -> &mut Self {
-        {
-            let mut stages = self
-                .world
-                .get_resource::<BackrollStages>()
-                .expect("No BackrollStages found! Did you install the plugin?")
-                .0
-                .lock();
-
-            stages.load.add_system(load_components::<T>);
-            stages.save.add_system(save_components::<T>);
-        }
-
+        let mut stages = self
+            .world
+            .get_resource_mut::<BackrollStages>()
+            .expect("No BackrollStages found! Did you install the plugin?");
+        stages.load.add_system(load_components::<T>);
+        stages.save.add_system(save_components::<T>);
         self
     }
 
     fn register_rollback_resource<T: Clone + Send + Sync + 'static>(&mut self) -> &mut Self {
-        {
-            let mut stages = self
-                .world
-                .get_resource::<BackrollStages>()
-                .expect("No BackrollStages found! Did you install the plugin?")
-                .0
-                .lock();
-
-            stages.load.add_system(load_resource::<T>);
-            stages.save.add_system(save_resource::<T>);
-        }
-
+        let mut stages = self
+            .world
+            .get_resource_mut::<BackrollStages>()
+            .expect("No BackrollStages found! Did you install the plugin?");
+        stages.load.add_system(load_resource::<T>);
+        stages.save.add_system(save_resource::<T>);
         self
     }
 
-    fn with_rollback_run_criteria<Input, S>(&mut self, mut run_criteria: S) -> &mut Self
+    fn with_rollback_run_criteria<Input, S>(&mut self, run_criteria: S) -> &mut Self
     where
         S: System<In = (), Out = ShouldRun>,
     {
-        run_criteria.initialize(&mut self.world);
         self.world
-            .get_resource::<BackrollStages>()
+            .get_resource_mut::<BackrollStages>()
             .expect("No BackrollStages found! Did you install the plugin?")
-            .0
-            .lock()
             .run_criteria = Some(Box::new(run_criteria));
         self
     }
@@ -447,10 +423,8 @@ impl BackrollApp for App {
         S: IntoSystemDescriptor<U>,
     {
         self.world
-            .get_resource::<BackrollStages>()
+            .get_resource_mut::<BackrollStages>()
             .expect("No BackrollStages found! Did you install the plugin?")
-            .0
-            .lock()
             .simulate
             .add_system(system);
         self
@@ -458,10 +432,8 @@ impl BackrollApp for App {
 
     fn add_rollback_system_set(&mut self, system: impl Into<SystemSet>) -> &mut Self {
         self.world
-            .get_resource::<BackrollStages>()
+            .get_resource_mut::<BackrollStages>()
             .expect("No BackrollStages found! Did you install the plugin?")
-            .0
-            .lock()
             .simulate
             .add_system_set(system.into());
         self

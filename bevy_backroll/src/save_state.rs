@@ -3,7 +3,7 @@ use bevy_ecs::prelude::*;
 use std::any::*;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tinyset::SetU32;
+use roaring::RoaringBitmap;
 use dashmap::DashMap;
 
 #[derive(Clone)]
@@ -13,14 +13,14 @@ struct SavedComponents<T: Clone> {
 
 /// A mutable builder for [`SaveState`]s.
 pub(crate) struct SaveStateBuilder {
-    ids: SetU32,
+    ids: RoaringBitmap,
     state: DashMap<TypeId, Box<dyn Any + Send + Sync>>,
 }
 
 impl SaveStateBuilder {
     pub fn new() -> Self {
         Self {
-            ids: SetU32::new(),
+            ids: RoaringBitmap::new(),
             state: DashMap::new(),
         }
     }
@@ -34,7 +34,7 @@ impl SaveStateBuilder {
 }
 
 struct SaveStateRef {
-    ids: SetU32,
+    ids: RoaringBitmap,
     state: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
 }
 

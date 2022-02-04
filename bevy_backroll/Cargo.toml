@@ -24,8 +24,8 @@ bevy_core = "0.6"
 bevy_tasks = "0.6"
 bevy_app = "0.6"
 bevy_log = "0.6"
-parking_lot = "0.11"
 tinyset = "0.4"
+dashmap = "5.0"
 
 # Optional dependencies
 bevy-steamworks = { version = "0.2", optional = true }

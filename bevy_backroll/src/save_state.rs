@@ -1,10 +1,10 @@
 use crate::NetworkId;
 use bevy_ecs::prelude::*;
-use parking_lot::Mutex;
 use std::any::*;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tinyset::SetU32;
+use dashmap::DashMap;
 
 #[derive(Clone)]
 struct SavedComponents<T: Clone> {
@@ -14,21 +14,21 @@ struct SavedComponents<T: Clone> {
 /// A mutable builder for [`SaveState`]s.
 pub(crate) struct SaveStateBuilder {
     ids: SetU32,
-    state: Mutex<HashMap<TypeId, Box<dyn Any + Send + Sync>>>,
+    state: DashMap<TypeId, Box<dyn Any + Send + Sync>>,
 }
 
 impl SaveStateBuilder {
     pub fn new() -> Self {
         Self {
             ids: SetU32::new(),
-            state: Mutex::new(HashMap::new()),
+            state: DashMap::new(),
         }
     }
 
     pub fn build(self) -> SaveState {
         SaveState(Arc::new(SaveStateRef {
             ids: self.ids,
-            state: self.state.into_inner(),
+            state: self.state.into_iter().collect(),
         }))
     }
 }
@@ -49,7 +49,6 @@ pub(crate) fn save_resource<T: Clone + Send + Sync + 'static>(
     if let Some(resource) = resource {
         save_state
             .state
-            .lock()
             .insert(TypeId::of::<T>(), Box::new(resource.clone()));
     }
 }
@@ -88,7 +87,7 @@ pub(crate) fn save_components<T: Component + Clone>(
         .map(|(id, component)| (*id, component.clone()))
         .collect();
     if !components.is_empty() {
-        save_state.state.lock().insert(
+        save_state.state.insert(
             TypeId::of::<SavedComponents<T>>(),
             Box::new(SavedComponents { components }),
         );

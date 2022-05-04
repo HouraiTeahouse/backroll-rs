@@ -58,8 +58,9 @@ use backroll::{
     command::{Command, Commands},
     Config, Event, GameInput, PlayerHandle,
 };
-use bevy_app::{App, CoreStage, Events, Plugin};
+use bevy_app::{App, CoreStage, Plugin};
 use bevy_ecs::{
+    event::Events,
     prelude::*,
     schedule::{IntoSystemDescriptor, ShouldRun, Stage, SystemSet, SystemStage},
     system::{Commands as BevyCommands, System},

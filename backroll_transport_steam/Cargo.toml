@@ -1,23 +1,15 @@
 [package]
 name = "backroll_transport_steam"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 authors = ["Hourai Teahouse Developers <contact@houraiteahouse.net>"]
 description = "A Steamworks implementation for backroll-transport."
 repository = "https://github.com/HouraiTeahouse/backroll-rs"
 license = "ISC"
 
-[package.metadata.docs.rs]
-features = [ "docs-only" ]
-
-[features]
-default = []
-# Skip looking for the Steamworks SDK for docs builds
-docs-only = ["steamworks/docs-only"]
-
 [dependencies]
 backroll_transport = { path = "../backroll_transport", version = "0.2" }
 async-channel = "1.6"
-bevy_tasks = "0.6"
+bevy_tasks = "0.7"
 tracing = "0.1"
-steamworks = "0.8.0"
+steamworks = "0.9.0"

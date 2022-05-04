@@ -1,6 +1,6 @@
 [package]
 name = "bevy_backroll"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 authors = ["Hourai Teahouse Developers <contact@houraiteahouse.net>"]
 description = "A Bevy engine integration plugin for the backroll rollback networking library."
@@ -13,23 +13,21 @@ features = [ "docs-only" ]
 [features]
 default = []
 steam = ["bevy-steamworks", "backroll_transport_steam"]
-# Skip looking for the Steamworks SDK for docs builds
-docs-only = ["steam", "backroll_transport_steam/docs-only"]
 
 [dependencies]
-backroll = { path = "../backroll", version = "0.3" }
+backroll = { path = "../backroll", version = "0.4" }
 bytemuck = "1.5"
-bevy_ecs = "0.6"
-bevy_core = "0.6"
-bevy_tasks = "0.6"
-bevy_app = "0.6"
-bevy_log = "0.6"
+bevy_ecs = "0.7"
+bevy_core = "0.7"
+bevy_tasks = "0.7"
+bevy_app = "0.7"
+bevy_log = "0.7"
 dashmap = "5.0"
-roaring = "0.8"
+roaring = "0.9"
 
 # Optional dependencies
-bevy-steamworks = { version = "0.2", optional = true }
-backroll_transport_steam = { path = "../backroll_transport_steam", version = "0.2", optional = true }
+bevy-steamworks = { version = "0.4", optional = true }
+backroll_transport_steam = { path = "../backroll_transport_steam", version = "0.3", optional = true }
 
 [dev-dependencies]
-bevy = "0.6"
+bevy = "0.7"

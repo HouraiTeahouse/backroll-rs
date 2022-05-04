@@ -1,10 +1,10 @@
 use crate::NetworkId;
 use bevy_ecs::prelude::*;
+use dashmap::DashMap;
+use roaring::RoaringBitmap;
 use std::any::*;
 use std::collections::HashMap;
 use std::sync::Arc;
-use roaring::RoaringBitmap;
-use dashmap::DashMap;
 
 #[derive(Clone)]
 struct SavedComponents<T: Clone> {

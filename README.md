@@ -45,13 +45,3 @@ This repo contains the following crates:
    (Complete, untested).
  * lib - third-party linking dependencies (i.e. Steam) for easier local 
    development
-
-# Building Locally
-Due to linking requirements for backroll\_transport\_steam, local builds that 
-include the crate currently only build when the Steamworks SDK is available.
-
-According to `steamworks-rs`, at build time the `STEAM_SDK_LOCATION` env var must 
-be set to a copy of the [Steamworks SDK](https://partner.steamgames.com/doc/sdk) 
-to properly link against. This repo embeds a version of the Steam SDK and uses
-`.cargo` at the root of the repo to configure it for easier development. Cargo will
-automatically set the env variable to simplify local builds.

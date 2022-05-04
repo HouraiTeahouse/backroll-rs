@@ -219,8 +219,7 @@ impl<T: Config> P2PSessionRef<T> {
         self.players
             .iter()
             .filter(|player| player.is_remote_player())
-            .map(|player| player.peer())
-            .flatten()
+            .filter_map(|player| player.peer())
     }
 
     fn player_handle_to_queue(&self, player: PlayerHandle) -> BackrollResult<usize> {

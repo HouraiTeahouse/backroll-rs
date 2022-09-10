@@ -1,7 +1,7 @@
 use async_channel::TrySendError;
 use async_net::{SocketAddr, UdpSocket};
 use backroll_transport::{Peer, Peers};
-use bevy_tasks::TaskPool;
+use bevy_tasks::IoTaskPool;
 use std::convert::TryFrom;
 use std::net::{ToSocketAddrs, UdpSocket as BlockingUdpSocket};
 use std::sync::{Arc, Weak};
@@ -45,7 +45,6 @@ impl UdpConnectionConfig {
 pub struct UdpManager {
     peers: Arc<Peers<SocketAddr>>,
     socket: UdpSocket,
-    task_pool: TaskPool,
 }
 
 impl UdpManager {
@@ -56,17 +55,17 @@ impl UdpManager {
     /// or start an async poll on the socket.
     ///
     /// [UdpSocket]: async_net::UdpSocket
-    pub fn bind(pool: TaskPool, addrs: impl ToSocketAddrs) -> std::io::Result<Self> {
+    pub fn bind(addrs: impl ToSocketAddrs) -> std::io::Result<Self> {
         let blocking = BlockingUdpSocket::bind(addrs)?;
         let socket = UdpSocket::try_from(blocking)?;
         let peers = Arc::new(Peers::default());
         let manager = Self {
             peers: peers.clone(),
             socket: socket.clone(),
-            task_pool: pool.clone(),
         };
 
-        pool.spawn(Self::recv(Arc::downgrade(&peers), socket))
+        IoTaskPool::get()
+            .spawn(Self::recv(Arc::downgrade(&peers), socket))
             .detach();
 
         Ok(manager)
@@ -88,7 +87,8 @@ impl UdpManager {
         let other = self.peers.get(&config.addr).unwrap();
         let socket = self.socket.clone();
         let task = Self::send(other, config.addr, socket);
-        self.task_pool.spawn(task).detach();
+
+        IoTaskPool::get().spawn(task).detach();
         peer
     }
 
@@ -158,10 +158,9 @@ mod test {
     pub fn test_basic_connect() {
         const ADDR_A: &str = "127.0.0.1:10000";
         const ADDR_B: &str = "127.0.0.1:10001";
-        let pool = TaskPool::new();
 
-        let socket_a = UdpManager::bind(pool.clone(), ADDR_A).unwrap();
-        let socket_b = UdpManager::bind(pool.clone(), ADDR_B).unwrap();
+        let socket_a = UdpManager::bind(ADDR_A).unwrap();
+        let socket_b = UdpManager::bind(ADDR_B).unwrap();
 
         let peer_a = socket_b.connect(UdpConnectionConfig::unbounded(ADDR_A.parse().unwrap()));
         let peer_b = socket_a.connect(UdpConnectionConfig::unbounded(ADDR_B.parse().unwrap()));
@@ -184,10 +183,9 @@ mod test {
     pub fn test_multiple_send() {
         const ADDR_A: &str = "127.0.0.1:10000";
         const ADDR_B: &str = "127.0.0.1:10001";
-        let pool = TaskPool::new();
 
-        let socket_a = UdpManager::bind(pool.clone(), ADDR_A).unwrap();
-        let socket_b = UdpManager::bind(pool.clone(), ADDR_B).unwrap();
+        let socket_a = UdpManager::bind(ADDR_A).unwrap();
+        let socket_b = UdpManager::bind(ADDR_B).unwrap();
 
         let peer_a = socket_b.connect(UdpConnectionConfig::unbounded(ADDR_A.parse().unwrap()));
         let peer_b = socket_a.connect(UdpConnectionConfig::unbounded(ADDR_B.parse().unwrap()));

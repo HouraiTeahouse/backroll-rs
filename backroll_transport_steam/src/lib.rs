@@ -1,6 +1,6 @@
 use async_channel::TrySendError;
 use backroll_transport::{Peer, Peers};
-use bevy_tasks::TaskPool;
+use bevy_tasks::IoTaskPool;
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 use steamworks::{CallbackHandle, Client, ClientManager, P2PSessionRequest, SendType, SteamId};
@@ -43,13 +43,12 @@ impl SteamConnectionConfig {
 pub struct SteamP2PManager {
     peers: Arc<Peers<SteamId>>,
     client: Client<ClientManager>,
-    task_pool: TaskPool,
     _session_request: CallbackHandle<ClientManager>,
 }
 
 impl SteamP2PManager {
     /// Starts a new thread to listen for P2P messages from Steam.
-    pub fn bind(pool: TaskPool, client: Client<ClientManager>) -> Self {
+    pub fn bind(client: Client<ClientManager>) -> Self {
         let peers = Arc::new(Peers::default());
 
         let peer_p2p = Arc::downgrade(&peers);
@@ -58,7 +57,6 @@ impl SteamP2PManager {
         let manager = Self {
             peers: peers.clone(),
             client: client.clone(),
-            task_pool: pool,
 
             // Register a P2P session request handler.
             _session_request: client.register_callback(move |request: P2PSessionRequest| {
@@ -102,7 +100,7 @@ impl SteamP2PManager {
         let other = self.peers.get(&config.remote).unwrap();
         let client = self.client.clone();
         let task = Self::send(other, config.remote, client);
-        self.task_pool.spawn(task).detach();
+        IoTaskPool::get().spawn(task).detach();
         peer
     }
 

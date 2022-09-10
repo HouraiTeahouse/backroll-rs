@@ -6,7 +6,7 @@ use crate::{
     protocol::{ConnectionStatus, Event as ProtocolEvent, Peer, PeerConfig},
     sync::{self, Sync},
     transport::Peer as TransportPeer,
-    Config, Event, Frame, NetworkStats, TaskPool, MAX_PLAYERS,
+    Config, Event, Frame, NetworkStats, MAX_PLAYERS,
 };
 use async_channel::TryRecvError;
 use parking_lot::RwLock;
@@ -48,12 +48,11 @@ impl<T: Config> PlayerType<T> {
         player: &Player,
         builder: &P2PSessionBuilder<T>,
         connect: Arc<[RwLock<ConnectionStatus>]>,
-        task_pool: TaskPool,
     ) -> Self {
         match player {
             Player::Local => Self::Local,
             Player::Remote(peer) => {
-                let (peer, rx) = Self::make_peer(queue, peer, builder, connect, task_pool);
+                let (peer, rx) = Self::make_peer(queue, peer, builder, connect);
                 PlayerType::<T>::Remote {
                     peer: Box::new(peer),
                     rx,
@@ -67,13 +66,11 @@ impl<T: Config> PlayerType<T> {
         peer: &TransportPeer,
         builder: &P2PSessionBuilder<T>,
         connect: Arc<[RwLock<ConnectionStatus>]>,
-        pool: TaskPool,
     ) -> (Peer<T>, async_channel::Receiver<ProtocolEvent<T::Input>>) {
         let config = PeerConfig {
             peer: peer.clone(),
             disconnect_timeout: builder.disconnect_timeout,
             disconnect_notify_start: builder.disconnect_notify_start,
-            task_pool: pool,
         };
 
         Peer::<T>::new(queue, config, connect)
@@ -196,8 +193,8 @@ where
     /// Backroll currently only supports one local player.
     ///
     /// [BackrolLError]: crate::BackrolLError
-    pub fn start(self, pool: TaskPool) -> BackrollResult<P2PSession<T>> {
-        P2PSession::new_internal(self, pool)
+    pub fn start(self) -> BackrollResult<P2PSession<T>> {
+        P2PSession::new_internal(self)
     }
 }
 
@@ -556,7 +553,7 @@ impl<T: Config> P2PSession<T> {
         P2PSessionBuilder::new()
     }
 
-    fn new_internal(builder: P2PSessionBuilder<T>, task_pool: TaskPool) -> BackrollResult<Self> {
+    fn new_internal(builder: P2PSessionBuilder<T>) -> BackrollResult<Self> {
         let local_player_count = builder
             .players
             .iter()
@@ -582,7 +579,6 @@ impl<T: Config> P2PSession<T> {
                     player,
                     &builder,
                     connect_status.clone(),
-                    task_pool.clone(),
                 )
             })
             .collect();

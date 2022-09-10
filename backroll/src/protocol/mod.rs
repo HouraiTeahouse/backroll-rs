@@ -3,8 +3,9 @@ use self::message::*;
 use crate::{
     input::FrameInput,
     time_sync::{TimeSync, UnixMillis},
-    Config, Frame, NetworkStats, TaskPool,
+    Config, Frame, NetworkStats, 
 };
+use bevy_tasks::IoTaskPool;
 use async_channel::TrySendError;
 use backroll_transport::Peer as TransportPeer;
 use bincode::config::Options;
@@ -150,7 +151,6 @@ pub(crate) struct PeerConfig {
     pub peer: TransportPeer,
     pub disconnect_timeout: Duration,
     pub disconnect_notify_start: Duration,
-    pub task_pool: TaskPool,
 }
 
 pub(crate) struct Peer<T>
@@ -209,7 +209,6 @@ impl<T: Config> Peer<T> {
             .iter()
             .map(|status| status.read().clone())
             .collect();
-        let task_pool = config.task_pool.clone();
 
         let peer = Self {
             queue,
@@ -228,6 +227,8 @@ impl<T: Config> Peer<T> {
             message_out,
             events,
         };
+
+        let task_pool = IoTaskPool::get();
 
         // Start the base subtasks on the provided executor
         task_pool
@@ -649,7 +650,7 @@ impl<T: Config> Peer<T> {
                     // if these tasks do not die before they get reevaluated, there will be multiple
                     // alive tasks. This is not the end of the world, but will use extra queue space
                     // and bandwidth.
-                    let task_pool = self.config.task_pool.clone();
+                    let task_pool = IoTaskPool::get();
                     task_pool
                         .spawn(self.clone().heartbeat(KEEP_ALIVE_INTERVAL))
                         .detach();

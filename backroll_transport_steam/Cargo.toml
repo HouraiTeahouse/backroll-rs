@@ -10,6 +10,6 @@ license = "ISC"
 [dependencies]
 backroll_transport = { path = "../backroll_transport", version = "0.2" }
 async-channel = "1.6"
-bevy_tasks = "0.7"
+bevy_tasks = "0.8"
 tracing = "0.1"
 steamworks = "0.9.0"

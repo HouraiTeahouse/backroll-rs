@@ -12,9 +12,6 @@ pub use backend::*;
 pub use backroll_transport as transport;
 pub use input::GameInput;
 
-// TODO(james7132): Generalize the executor for these.
-pub(crate) use bevy_tasks::TaskPool;
-
 /// The maximum number of players supported in a single game.
 pub const MAX_PLAYERS: usize = 8;
 // Approximately 2 seconds of frames.

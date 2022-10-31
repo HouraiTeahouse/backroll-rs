@@ -23,7 +23,7 @@ bevy_tasks = "0.8"
 bevy_app = "0.8"
 bevy_log = "0.8"
 dashmap = "5.0"
-roaring = "0.9"
+roaring = "0.10"
 
 # Optional dependencies
 bevy-steamworks = { version = "0.5", optional = true }

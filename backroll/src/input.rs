@@ -1,5 +1,6 @@
 use crate::{BackrollError, Frame, PlayerHandle, MAX_PLAYERS, MAX_ROLLBACK_FRAMES};
 use std::convert::TryFrom;
+use std::mem::MaybeUninit;
 use tracing::debug;
 
 #[inline]
@@ -116,15 +117,14 @@ impl<T: bytemuck::Zeroable + Clone + PartialEq> InputQueue<T> {
         // Assuming Zeroable is implemented correctly, this should also never
         // panic, so a buffer will always correctly be allocated as a large
         // zeroed buffer.
-        let inputs: [FrameInput<T>; MAX_ROLLBACK_FRAMES] = {
-            let mut inputs: [FrameInput<T>; MAX_ROLLBACK_FRAMES] =
-                unsafe { std::mem::MaybeUninit::uninit().assume_init() };
-
+        let inputs: [FrameInput<T>; MAX_ROLLBACK_FRAMES] = unsafe {
+            let mut inputs: [MaybeUninit<FrameInput<T>>; MAX_ROLLBACK_FRAMES] =
+                MaybeUninit::<[MaybeUninit<FrameInput<T>>; MAX_ROLLBACK_FRAMES]>::uninit()
+                    .assume_init();
             for input in inputs.iter_mut() {
-                *input = Default::default();
+                input.write(Default::default());
             }
-
-            inputs
+            inputs.map(|input| input.assume_init())
         };
 
         Self {

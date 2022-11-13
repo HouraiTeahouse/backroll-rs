@@ -4,10 +4,7 @@ use bevy_ecs::prelude::*;
 use bevy_steamworks::{Client, ClientManager};
 use std::ops::Deref;
 
-fn initialize_steam_socket(
-    client: Option<Res<Client<ClientManager>>>,
-    mut commands: Commands,
-) {
+fn initialize_steam_socket(client: Option<Res<Client<ClientManager>>>, mut commands: Commands) {
     if let Some(client) = client {
         commands.insert_resource(SteamP2PManager::bind(client.clone()));
     }

@@ -1,4 +1,4 @@
-use bevy_ecs::component::Component;
+use bevy_ecs::{system::Resource, component::Component};
 
 /// A marker [`Component`]. Required to mark entities with network state.
 ///
@@ -17,7 +17,7 @@ pub struct NetworkId(pub(crate) u32);
 /// [`BackrollCommands::start_backroll_session`][start_backroll_session].
 ///
 /// [start_backroll_session]: crate::BackrollCommands::start_backroll_session
-#[derive(Debug, Clone)]
+#[derive(Resource, Debug, Clone)]
 #[repr(transparent)]
 pub struct NetworkIdProvider(u32);
 

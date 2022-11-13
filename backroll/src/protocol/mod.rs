@@ -3,11 +3,11 @@ use self::message::*;
 use crate::{
     input::FrameInput,
     time_sync::{TimeSync, UnixMillis},
-    Config, Frame, NetworkStats, 
+    Config, Frame, NetworkStats,
 };
-use bevy_tasks::IoTaskPool;
 use async_channel::TrySendError;
 use backroll_transport::Peer as TransportPeer;
+use bevy_tasks::IoTaskPool;
 use bincode::config::Options;
 use futures::FutureExt;
 use futures_timer::Delay;

@@ -12,6 +12,7 @@ struct SavedComponents<T: Clone> {
 }
 
 /// A mutable builder for [`SaveState`]s.
+#[derive(Resource)]
 pub(crate) struct SaveStateBuilder {
     ids: RoaringBitmap,
     state: DashMap<TypeId, Box<dyn Any + Send + Sync>>,
@@ -39,10 +40,10 @@ struct SaveStateRef {
 }
 
 /// A read only save state of a Bevy world.
-#[derive(Clone)]
+#[derive(Resource, Clone)]
 pub struct SaveState(Arc<SaveStateRef>);
 
-pub(crate) fn save_resource<T: Clone + Send + Sync + 'static>(
+pub(crate) fn save_resource<T: Resource + Clone>(
     save_state: Res<SaveStateBuilder>,
     resource: Option<Res<T>>,
 ) {
@@ -53,7 +54,7 @@ pub(crate) fn save_resource<T: Clone + Send + Sync + 'static>(
     }
 }
 
-pub(crate) fn load_resource<T: Clone + Send + Sync + 'static>(
+pub(crate) fn load_resource<T: Resource + Clone>(
     save_state: Res<SaveState>,
     resource: Option<ResMut<T>>,
     mut commands: Commands,
@@ -109,7 +110,7 @@ pub(crate) fn sync_network_ids(
 
     // All IDs that remain need to re-spawned.
     for network_id in ids {
-        commands.spawn_bundle((NetworkId(network_id),));
+        commands.spawn((NetworkId(network_id),));
     }
 }
 

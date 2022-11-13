@@ -573,14 +573,7 @@ impl<T: Config> P2PSession<T> {
             .players
             .iter()
             .enumerate()
-            .map(|(i, player)| {
-                PlayerType::<T>::new(
-                    i,
-                    player,
-                    &builder,
-                    connect_status.clone(),
-                )
-            })
+            .map(|(i, player)| PlayerType::<T>::new(i, player, &builder, connect_status.clone()))
             .collect();
 
         let synchronizing = players.iter().any(|player| !player.is_local());

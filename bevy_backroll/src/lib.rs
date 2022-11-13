@@ -67,7 +67,7 @@ use bevy_ecs::{
     world::World,
 };
 use bevy_log::{debug, error};
-use std::marker::PhantomData;
+use std::{ops::{Deref, DerefMut}, marker::PhantomData};
 
 mod id;
 mod save_state;
@@ -81,6 +81,26 @@ use save_state::*;
 /// A [`P2PSession`] alias for bevy_backroll sessions. Uses [`BevyBackrollConfig`]
 /// as the config type.
 pub type P2PSession<Input> = backroll::P2PSession<BevyBackrollConfig<Input>>;
+
+/// A Bevy-compatible wrapper around [`GameInput`]. Implements [`Resource`].
+#[derive(Resource, Debug, Clone)]
+pub struct BackrollInput<Input>(GameInput<Input>);
+
+impl<Input> Deref for BackrollInput<Input>{
+    type Target = GameInput<Input>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<Input> DerefMut for BackrollInput<Input>{
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+#[derive(Resource, Clone)]
+struct BackrollSession<Input: Send + Sync + bytemuck::Pod + PartialEq>(P2PSession<Input>);
 
 /// The [SystemLabel] used by the [BackrollStage] added by [BackrollPlugin].
 ///
@@ -135,6 +155,7 @@ impl FrameStaller {
     }
 }
 
+#[derive(Resource)]
 struct BackrollStages {
     save: SystemStage,
     simulate: SystemStage,
@@ -218,7 +239,7 @@ where
                     }
                     Command::AdvanceFrame(inputs) => {
                         // Insert input via Resource
-                        *world.get_resource_mut::<GameInput<Input>>().unwrap() = inputs;
+                        *world.get_resource_mut::<BackrollInput<Input>>().unwrap() = BackrollInput(inputs);
                         stages.simulate.run(world);
                     }
                     Command::Event(evt) => {
@@ -256,8 +277,8 @@ where
                 return;
             }
 
-            let session = if let Some(session) = world.get_resource_mut::<P2PSession<Input>>() {
-                session.clone()
+            let session = if let Some(session) = world.get_resource_mut::<BackrollSession<Input>>() {
+                session.0.clone()
             } else {
                 // No ongoing session, don't run.
                 return;
@@ -346,7 +367,7 @@ pub trait BackrollApp {
 
     /// Registers a specific resource type for saving into Backroll's save states.
     /// Any game simulation state stored in resources should be registered here.
-    fn register_rollback_resource<T: Clone + Send + Sync + 'static>(&mut self) -> &mut Self;
+    fn register_rollback_resource<T: Resource + Clone>(&mut self) -> &mut Self;
 
     /// Sets the [RunCriteria] for the [BackrollStage]. By default this uses a [FixedTimestep]
     /// set to 60 ticks per second.
@@ -375,7 +396,7 @@ impl BackrollApp for App {
         Input: PartialEq + bytemuck::Pod + bytemuck::Zeroable + Send + Sync,
         S: System<In = PlayerHandle, Out = Input> + Send + Sync + 'static,
     {
-        self.insert_resource(GameInput::<Input>::default());
+        self.insert_resource(BackrollInput(GameInput::<Input>::default()));
         self.add_stage_before(
             CoreStage::Update,
             BackrollUpdate,
@@ -398,7 +419,7 @@ impl BackrollApp for App {
         self
     }
 
-    fn register_rollback_resource<T: Clone + Send + Sync + 'static>(&mut self) -> &mut Self {
+    fn register_rollback_resource<T: Resource + Clone>(&mut self) -> &mut Self {
         let mut stages = self
             .world
             .get_resource_mut::<BackrollStages>()
@@ -470,13 +491,13 @@ impl<'w, 's> BackrollCommands for BevyCommands<'w, 's> {
     {
         // Reset the NetworkIdProvider on the start of a new session.
         self.insert_resource(NetworkIdProvider::new());
-        self.insert_resource(session);
+        self.insert_resource(BackrollSession(session));
     }
 
     fn end_backroll_session<Input>(&mut self)
     where
         Input: PartialEq + bytemuck::Pod + bytemuck::Zeroable + Send + Sync,
     {
-        self.remove_resource::<P2PSession<Input>>();
+        self.remove_resource::<BackrollSession<Input>>();
     }
 }

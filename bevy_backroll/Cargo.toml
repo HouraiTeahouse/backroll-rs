@@ -15,7 +15,7 @@ default = []
 steam = ["bevy-steamworks", "backroll_transport_steam"]
 
 [dependencies]
-backroll = { path = "../backroll", version = "0.4" }
+backroll = { path = "../backroll", version = "0.5" }
 bytemuck = "1.5"
 bevy_ecs = "0.9"
 bevy_core = "0.9"
@@ -27,7 +27,7 @@ roaring = "0.10"
 
 # Optional dependencies
 bevy-steamworks = { version = "0.6", optional = true }
-backroll_transport_steam = { path = "../backroll_transport_steam", version = "0.3", optional = true }
+backroll_transport_steam = { path = "../backroll_transport_steam", version = "0.4", optional = true }
 
 [dev-dependencies]
 bevy = "0.9"

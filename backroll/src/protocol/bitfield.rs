@@ -14,7 +14,7 @@ pub fn encode_with_offset(buf: impl AsRef<[u8]>, offset: usize) -> (Vec<u8>, usi
     let mut contiguous = false;
     let mut prev_bits = 0;
     let mut noncontiguous_bits = Vec::new();
-    let mut enc = Vec::with_capacity(encode_len_with_offset(&buf, offset));
+    let mut enc = Vec::with_capacity(encode_len_with_offset(buf, offset));
 
     for (i, byte) in buf[offset..].iter().enumerate() {
         if contiguous && *byte == prev_bits {
@@ -124,7 +124,7 @@ pub fn decode_with_offset(
     mut offset: usize,
 ) -> Result<(Vec<u8>, usize), DecodeError> {
     let buf = buf.as_ref();
-    let mut bitfield = vec![0; decode_len_with_offset(&buf, offset)?];
+    let mut bitfield = vec![0; decode_len_with_offset(buf, offset)?];
     let mut next = 0u64;
     let mut ptr = 0;
 

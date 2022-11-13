@@ -1,12 +1,17 @@
-use backroll_transport_steam::SteamP2PManager;
 use bevy_app::{App, Plugin};
 use bevy_ecs::prelude::*;
-use bevy_steamworks::{Client, ClientManager};
+use bevy_steamworks::Client;
 use std::ops::Deref;
 
-fn initialize_steam_socket(client: Option<Res<Client<ClientManager>>>, mut commands: Commands) {
+#[derive(Resource)]
+pub struct SteamP2PManager(backroll_transport_steam::SteamP2PManager);
+
+fn initialize_steam_socket(client: Option<Res<Client>>, mut commands: Commands) {
     if let Some(client) = client {
-        commands.insert_resource(SteamP2PManager::bind(client.clone()));
+        let client = client.deref().deref();
+        commands.insert_resource(SteamP2PManager(
+            backroll_transport_steam::SteamP2PManager::bind(client.clone()),
+        ));
     }
 }
 

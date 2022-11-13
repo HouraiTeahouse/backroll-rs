@@ -152,10 +152,13 @@ impl UdpManager {
 #[cfg(test)]
 mod test {
     use super::*;
+    use bevy_tasks::{IoTaskPool, TaskPool};
 
     #[test]
     #[serial_test::serial]
     pub fn test_basic_connect() {
+        IoTaskPool::init(TaskPool::default);
+
         const ADDR_A: &str = "127.0.0.1:10000";
         const ADDR_B: &str = "127.0.0.1:10001";
 
@@ -181,8 +184,10 @@ mod test {
     #[test]
     #[serial_test::serial]
     pub fn test_multiple_send() {
-        const ADDR_A: &str = "127.0.0.1:10000";
-        const ADDR_B: &str = "127.0.0.1:10001";
+        IoTaskPool::init(TaskPool::default);
+
+        const ADDR_A: &str = "127.0.0.1:10002";
+        const ADDR_B: &str = "127.0.0.1:10003";
 
         let socket_a = UdpManager::bind(ADDR_A).unwrap();
         let socket_b = UdpManager::bind(ADDR_B).unwrap();

@@ -35,7 +35,7 @@
 //!
 //! // Use input to advance the game simulation.
 //! fn simulate_game(
-//!   input: Res<GameInput<PlayerInput>>,
+//!   input: Res<BackrollInput<PlayerInput>>,
 //!   mut query: Query<&mut PlayerState>
 //! ) {
 //!    for mut player in query.iter_mut() {
@@ -48,7 +48,7 @@
 //! fn main() {
 //!     App::new()
 //!         .add_plugin(BackrollPlugin)
-//!         .register_rollback_input(sample_player_input.system())
+//!         .register_rollback_input(sample_player_input)
 //!         .register_rollback_component::<PlayerState>()
 //!         .add_rollback_system(simulate_game)
 //!         .run();
@@ -361,10 +361,10 @@ impl Plugin for BackrollPlugin {
 pub trait BackrollApp {
     /// Sets the input sampler system for Backroll. This is required. Backroll will
     /// not start without this being set.
-    fn register_rollback_input<Input, S>(&mut self, system: S) -> &mut Self
+    fn register_rollback_input<Input, S, Params>(&mut self, system: S) -> &mut Self
     where
         Input: PartialEq + bytemuck::Pod + bytemuck::Zeroable + Send + Sync,
-        S: System<In = PlayerHandle, Out = Input> + Send + Sync + 'static;
+        S: IntoSystem<PlayerHandle, Input, Params> + Send + Sync + 'static;
 
     /// Registers a specific component type for saving into Backroll's save states.
     /// Any game simulation state stored in components should be registered here.
@@ -396,10 +396,10 @@ pub trait BackrollApp {
 }
 
 impl BackrollApp for App {
-    fn register_rollback_input<Input, S>(&mut self, system: S) -> &mut Self
+    fn register_rollback_input<Input, S, Params>(&mut self, system: S) -> &mut Self
     where
         Input: PartialEq + bytemuck::Pod + bytemuck::Zeroable + Send + Sync,
-        S: System<In = PlayerHandle, Out = Input> + Send + Sync + 'static,
+        S: IntoSystem<PlayerHandle, Input, Params> + Send + Sync + 'static,
     {
         self.insert_resource(BackrollInput(GameInput::<Input>::default()));
         self.add_stage_before(
@@ -407,7 +407,7 @@ impl BackrollApp for App {
             BackrollUpdate,
             BackrollStage::<Input> {
                 staller: FrameStaller::new(),
-                input_sample_fn: Box::new(system),
+                input_sample_fn: Box::new(S::into_system(system)),
             },
         );
 

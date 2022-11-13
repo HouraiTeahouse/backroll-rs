@@ -1,4 +1,4 @@
-use bevy_ecs::{system::Resource, component::Component};
+use bevy_ecs::{component::Component, system::Resource};
 
 /// A marker [`Component`]. Required to mark entities with network state.
 ///

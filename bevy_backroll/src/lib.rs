@@ -67,7 +67,10 @@ use bevy_ecs::{
     world::World,
 };
 use bevy_log::{debug, error};
-use std::{ops::{Deref, DerefMut}, marker::PhantomData};
+use std::{
+    marker::PhantomData,
+    ops::{Deref, DerefMut},
+};
 
 mod id;
 mod save_state;
@@ -86,14 +89,14 @@ pub type P2PSession<Input> = backroll::P2PSession<BevyBackrollConfig<Input>>;
 #[derive(Resource, Debug, Clone)]
 pub struct BackrollInput<Input>(GameInput<Input>);
 
-impl<Input> Deref for BackrollInput<Input>{
+impl<Input> Deref for BackrollInput<Input> {
     type Target = GameInput<Input>;
     fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
 
-impl<Input> DerefMut for BackrollInput<Input>{
+impl<Input> DerefMut for BackrollInput<Input> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
     }
@@ -239,7 +242,8 @@ where
                     }
                     Command::AdvanceFrame(inputs) => {
                         // Insert input via Resource
-                        *world.get_resource_mut::<BackrollInput<Input>>().unwrap() = BackrollInput(inputs);
+                        *world.get_resource_mut::<BackrollInput<Input>>().unwrap() =
+                            BackrollInput(inputs);
                         stages.simulate.run(world);
                     }
                     Command::Event(evt) => {
@@ -277,7 +281,8 @@ where
                 return;
             }
 
-            let session = if let Some(session) = world.get_resource_mut::<BackrollSession<Input>>() {
+            let session = if let Some(session) = world.get_resource_mut::<BackrollSession<Input>>()
+            {
                 session.0.clone()
             } else {
                 // No ongoing session, don't run.

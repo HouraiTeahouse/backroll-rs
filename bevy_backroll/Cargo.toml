@@ -1,6 +1,6 @@
 [package]
 name = "bevy_backroll"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 authors = ["Hourai Teahouse Developers <contact@houraiteahouse.net>"]
 description = "A Bevy engine integration plugin for the backroll rollback networking library."

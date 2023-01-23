@@ -16,4 +16,4 @@ tracing = "0.1"
 
 [dev-dependencies]
 futures = "0.3"
-serial_test = "0.9"
+serial_test = "1.0"

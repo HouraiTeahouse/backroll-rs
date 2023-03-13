@@ -11,7 +11,7 @@ license = "ISC"
 backroll_transport = { path = "../backroll_transport", version = "0.2" }
 async-channel = "1.6"
 async-net = "1.6.0" 
-bevy_tasks = "0.9"
+bevy_tasks = "0.10"
 tracing = "0.1"
 
 [dev-dependencies]
